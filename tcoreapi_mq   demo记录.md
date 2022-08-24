@@ -13,6 +13,52 @@ core = t.TCoreZMQ(quote_port="51864", trade_port="51834")  # uat
 
 账号: y开头的账户
 
+## python取数据代码示例
+
+### 1. 获取即时的期权greeks信息
+
+```python
+def get_option_data_with_greeks():
+    '''
+    获取最新k的期权数据, 及其希腊值(权分析版)
+    '''
+    today = datetime.date.today()
+    csd_date = today.strftime('%Y%m%d')
+    option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
+    while option_symbols['Success'] != 'OK':
+        option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
+    for month in [0, 1, 2, 3]:
+        tau = int(option_symbols['Instruments']['Node'][0]
+                  ['Node'][0]['Node'][2+month]['Node'][0]['TradeingDays'][0])
+        for j, crt_symbol in enumerate(option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][0]['Contracts']):
+            new_option_data = pd.DataFrame(core.SubHistory(
+                crt_symbol, 'DOGSK', csd_date+'00', csd_date+'07'))
+            newest_index = new_option_data.index.drop_duplicates(keep='first').tolist()[-1]
+            true_option = new_option_data.iloc[(new_option_data.index == newest_index).tolist()]
+            new_option_data = true_option[['Symbol', 'd', 't', 'iv', 'de', 'ga', 'va', 've', 'th', 'ch', 'vo', 'spe', 'zo', ]]
+            flag = 'C'
+            new_option_data['flag'] = flag
+            new_option_data['tau'] = tau
+            if j == 0 and month == 0:
+                df = new_option_data
+            else:
+                df = df.append(new_option_data)
+        for k in option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][1]['Contracts']:
+            new_option_data = pd.DataFrame(core.SubHistory(
+                k, 'DOGSK', csd_date+'00', csd_date+'07'))
+            newest_index = new_option_data.index.drop_duplicates(keep='first').tolist()[-1]
+            true_option = new_option_data.iloc[(new_option_data.index == newest_index).tolist()]
+            new_option_data = true_option[['Symbol', 'd', 't', 'iv', 'de', 'ga', 'va', 've', 'th', 'ch', 'vo', 'spe', 'zo', ]]
+            flag = 'P'
+            new_option_data['flag'] = flag
+            new_option_data['tau'] = tau
+            df = df.append(new_option_data)
+    df.columns = ['Symbol', 'Date', 'precisetime', 'iv', 'delta', 'gamma', 'vanna', 'vega', 'theta', 'charm', 'vomma', 'speed', 'zomma', 'flag', 'tau']
+    return df
+```
+
+
+
 ## 古早版本
 
 ### 1.实时行情订阅
