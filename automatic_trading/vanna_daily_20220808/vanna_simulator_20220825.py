@@ -1,6 +1,6 @@
 '''
-@File    :   vanna_simulator_daily_20220808.py
-@Time    :   2022/08/17 14:57:37
+@File    :   vanna_simulator_daily_20220825.py
+@Time    :   2022/08/25
 @Author  :   DingWenjie
 @Contact :   359582058@qq.com
 @Desc    :   日级别vanna策略模拟交易脚本, 需上午下午各运行一次, 自动进行开仓以及对冲,
@@ -21,16 +21,6 @@ import talib as ta
 import tcoreapi_mq as t
 from matplotlib import pyplot as plt
 from tabulate import tabulate
-from dwj_tools.Lib_OptionCalculator import CalVannaCall
-from dwj_tools.Lib_OptionCalculator import CalVannaPut
-from dwj_tools.Lib_OptionCalculator import CalIVPut
-from dwj_tools.Lib_OptionCalculator import CalDeltaPut
-from dwj_tools.Lib_OptionCalculator import CalIVCall
-from dwj_tools.Lib_OptionCalculator import CalDeltaCall
-from dwj_tools.Lib_OptionCalculator import CalThetaCall
-from dwj_tools.Lib_OptionCalculator import CalThetaPut
-from dwj_tools.Lib_OptionCalculator import CalVegaCall
-from dwj_tools.Lib_OptionCalculator import CalVegaPut
 from pylab import mpl
 from matplotlib import ticker
 
@@ -41,7 +31,7 @@ core = t.TCoreZMQ(quote_port="51864", trade_port="51834")
 thisDir = os.path.dirname(__file__)
 
 
-def get_option_data(interval='1K'):
+def get_option_data(interval='DOGSK'):
     '''获取给定日期的期权数据
     Args:
         interval: 数据间隔, 默认五分钟
@@ -51,12 +41,15 @@ def get_option_data(interval='1K'):
     today = datetime.date.today()
     csd_date = today.strftime('%Y%m%d')
     option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
+    len_of_df = 0
     while option_symbols['Success'] != 'OK':
         option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
     for month in [0, 1, 2, 3]:
+        print(f'当前month {month}')
         tau = int(option_symbols['Instruments']['Node'][0]
                   ['Node'][0]['Node'][2+month]['Node'][0]['TradeingDays'][0])
         for j, crt_symbol in enumerate(option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][0]['Contracts']):
+            print(j)
             new_option_data = pd.DataFrame(core.SubHistory(
                 crt_symbol, interval, csd_date+'00', csd_date+'07'))
             temp_date = len(new_option_data) * [csd_date]
@@ -66,8 +59,9 @@ def get_option_data(interval='1K'):
             new_option_data['tau'] = tau
             if j == 0 and month == 0:
                 df = new_option_data
+                len_of_df = len(df)
             else:
-                df = df.append(new_option_data)
+                df = df.append(new_option_data.iloc[:len_of_df,:])
         for k in option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][1]['Contracts']:
             new_option_data = pd.DataFrame(core.SubHistory(
                 k, interval, csd_date+'00', csd_date+'07'))
@@ -76,94 +70,17 @@ def get_option_data(interval='1K'):
             new_option_data['date'] = temp_date
             new_option_data['flag'] = flag
             new_option_data['tau'] = tau
-            df = df.append(new_option_data)
+            df = df.append(new_option_data.iloc[:len_of_df,:])
+    df.rename(columns={'de': 'delta','p': 'Close','ve':'vega','th':'theta'}, inplace=True)
     close = np.array(pd.to_numeric(df['Close']))
     df['Close'] = close
+    delta = np.array(pd.to_numeric(df['delta']))/100
+    df['delta'] = delta
+    vega = np.array(pd.to_numeric(df['vega']))
+    df['vega'] = vega
+    theta = np.array(pd.to_numeric(df['theta']))
+    df['theta'] = theta
     return df
-
-
-def cpt_greeks(call_option, put_option, tau):
-    '''计算希腊值
-    Args:
-        call/put_option: call/put 原始数据
-        tau: 年化后的到期时间, 记得输入时除以240
-    Return:
-        call/put_option
-    '''
-    K = []
-    iv = []
-    delta = []
-    vanna = []
-    vega = []
-    theta = []
-    r = np.log(1.018)
-    if len(call_option) < len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) == float(put_option['Symbol'][0].split('.P.')[1]):
-        put_option = put_option.iloc[:-1, :]
-    elif len(call_option) < len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) != float(put_option['Symbol'][0].split('.P.')[1]):
-        put_option = put_option.iloc[1:, :]
-    elif len(call_option) > len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) == float(put_option['Symbol'][0].split('.P.')[1]):
-        call_option = call_option.iloc[:-1, :]
-    elif len(call_option) > len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) != float(put_option['Symbol'][0].split('.P.')[1]):
-        call_option = call_option.iloc[1:, :]
-    for i in range(len(call_option)):
-        cc = call_option['Symbol'][i]
-        K += [float(cc.split('.C.')[1])]
-    K = np.array(K, dtype='float64')
-    iiidd = np.abs(np.array(call_option['Close'])
-                   - np.array(put_option['Close'])).argmin()
-    stock_price = (np.array(call_option['Close'])
-                   + K*np.exp(-tau*r)
-                   - np.array(put_option['Close']))[iiidd]
-    for k in range(len(call_option)):
-        implied_vol = CalIVCall(
-            S=stock_price, K=K[k], T=tau, r=r, c=call_option['Close'].iloc[k])
-        iv = iv + [implied_vol]
-        delta = delta + \
-            [CalDeltaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-        vanna = vanna + \
-            [CalVannaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-        vega = vega + \
-            [CalVegaCall(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        theta = theta + \
-            [CalThetaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-    call_option['delta'] = delta
-    call_option['iv'] = iv
-    call_option['vanna'] = vanna
-    call_option['theta'] = theta
-    call_option['vega'] = vega
-    iv = []
-    delta = []
-    vanna = []
-    vega = []
-    theta = []
-    for k in range(len(put_option)):
-        implied_vol = CalIVPut(
-            S=stock_price, K=K[k], T=tau, r=r, p=put_option['Close'].iloc[k])
-        iv = iv + [implied_vol]
-        delta = delta + \
-            [CalDeltaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        vanna = vanna + \
-            [CalVannaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        vega = vega + \
-            [CalVegaPut(S=stock_price, K=K[k],
-                        T=tau, r=r, iv=implied_vol)]
-        theta = theta + \
-            [CalThetaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-    put_option['delta'] = delta
-    put_option['iv'] = iv
-    put_option['vanna'] = vanna
-    put_option['theta'] = theta
-    put_option['vega'] = vega
-    call_option['strike'] = K
-    put_option['strike'] = K
-    return call_option, put_option
 
 
 def cpt_position_vanilla(symbol='TC.S.SSE.510050', timeperiod=20, std=2, up_limit=1.4, down_limit=-0.4):
@@ -328,8 +245,6 @@ def choose_option_given_month(option, month=0):
         true_option['flag'] == 'C'), :].reset_index(drop=True)
     true_option_put = true_option.loc[list(
         true_option['flag'] == 'P'), :].reset_index(drop=True)
-    true_option_call, true_option_put = cpt_greeks(
-        true_option_call, true_option_put, crt_tau/240)
     return true_option_call, true_option_put
 
 
@@ -583,7 +498,7 @@ def get_crt_skew():
     syn_f = core.SubHistory(
         f'TC.F.U_SSE.510050.{hot_month}', 'DOGSK', today_str+'00', today_str+'07')
     syn_f = pd.DataFrame(syn_f)
-    return float(syn_f['cskew'].tolist()[-5])*100, float(syn_f['pskew'].tolist()[-5])*100
+    return float(syn_f['cskew'].tolist()[-1])*100, float(syn_f['pskew'].tolist()[-1])*100
 
 
 def get_cashdelta_cashvega(BrokerID, Account):
@@ -615,6 +530,8 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     forced_next = False
     crt_cash_vanna, having_position = get_crt_account_cashvanna(
         BrokerID=BrokerID, Account=Account, log=log)
+    if log:
+        print('开始获取期权数据')
     try:
         option = get_option_data()
     except:
@@ -856,7 +773,7 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
             '模拟账户名': Account,
             '日期': today_str,
             '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium'])),
-            '今日收益': str(round((float(i['PnL'])/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 2))+'%',
+            '今日收益': str(round((float(i['PnL'])/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%',
             '今日损益': int(round(float(i['PnL']), 0)),
             '昨持损益': int(round(float(i['YdPnL']), 0)),
             '日内损益': int(round(float(i['TdPnL']), 0)),
@@ -873,7 +790,9 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
 
     if not crt_position_only:
         md_str += '**今日最终未持仓**' + '\n\n'
+        having_final_position = False
     else:
+        having_final_position = True
         md_str += '**最终持仓统计**' + '\n\n'
         strike_of_position = []
         month_of_position = []
@@ -882,8 +801,10 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                 strike_of_position += [round(float(position['StrikePrice']), 2)]
             if int(position['Month']) not in month_of_position:
                 month_of_position += [int(position['Month'])]
-        csd_strike_list = strike_list[strike_list.index(
-            min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+        old_min_id = strike_list.index(min(strike_of_position))
+        old_max_id = strike_list.index(max(strike_of_position))
+        csd_strike_list = strike_list[old_min_id:old_max_id+1]
+        old_min_id = strike_list.index(min(strike_of_position))
         month_of_position.sort()
         position_array = np.zeros(
             (2*len(month_of_position), len(csd_strike_list)))
@@ -934,9 +855,12 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                     strike_of_position += [round(float(b), 2)]
                 if a.split('.')[-1] not in month_of_position:
                     month_of_position += [int(a.split('.')[-1])]
-
-            csd_strike_list = strike_list[strike_list.index(
-                min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+            if not having_final_position:
+                csd_strike_list = strike_list[strike_list.index(
+                    min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+            else:
+                csd_strike_list = strike_list[min(strike_list.index(
+                    min(strike_of_position)),old_min_id):max(strike_list.index(max(strike_of_position)),old_max_id)+1]
             month_of_position.sort()
             month_of_position = pd.Series(month_of_position)
             month_of_position.drop_duplicates(inplace=True)
@@ -1021,10 +945,6 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                                  j['1%Td$Vanna'], j['Td$Theta'], j['Td$Charm'], j['Td$Speed'], j['Td$Vomma']]
             new_td_cashgreeks = [int(float(a)) for a in new_td_cashgreeks]
             td_cashgreeks += new_td_cashgreeks
-            # final_cashgreeks += [j['$Delta'], j['$Gamma'], j['$Vega'],
-            #                      j['1%$Vanna'], j['$Theta'], j['$Charm'], j['$Speed'], j['$Vomma']]
-            # td_cashgreeks += [j['Td$Delta'], j['Td$Gamma'], j['Td$Vega'],
-            #                   j['1%Td$Vanna'], j['Td$Theta'], j['Td$Charm'], j['Td$Speed'], j['Td$Vomma']]
             final_cashgreeks_df = final_cashgreeks_df.append(
                 pd.DataFrame(final_cashgreeks).T)
             td_cashgreeks_df = td_cashgreeks_df.append(
@@ -1040,8 +960,6 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
         td_cashgreeks_df.index = index_
         final_cashgreeks_df.columns = columns
         td_cashgreeks_df.columns = columns
-        # md_str += '\n**总体cashgreeks**\n' + final_cashgreeks_df.to_markdown() + '\n\n' + \
-        #     '**日内cashgreeks**' + '\n\n' + td_cashgreeks_df.to_markdown() + '\n\n'
         md_str += '\n**总体cashgreeks**\n' + tabulate(final_cashgreeks_df, headers=final_cashgreeks_df.columns, tablefmt='pipe', disable_numparse=True) + '\n\n' + \
             '**日内cashgreeks**' + '\n\n' + \
             tabulate(td_cashgreeks_df, headers=td_cashgreeks_df.columns,

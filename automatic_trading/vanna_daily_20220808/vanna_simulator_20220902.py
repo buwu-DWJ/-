@@ -1,6 +1,6 @@
 '''
-@File    :   vanna_simulator_daily_20220808.py
-@Time    :   2022/08/17 14:57:37
+@File    :   vanna_simulator_20220902.py
+@Time    :   2022/09/02
 @Author  :   DingWenjie
 @Contact :   359582058@qq.com
 @Desc    :   日级别vanna策略模拟交易脚本, 需上午下午各运行一次, 自动进行开仓以及对冲,
@@ -21,16 +21,6 @@ import talib as ta
 import tcoreapi_mq as t
 from matplotlib import pyplot as plt
 from tabulate import tabulate
-from dwj_tools.Lib_OptionCalculator import CalVannaCall
-from dwj_tools.Lib_OptionCalculator import CalVannaPut
-from dwj_tools.Lib_OptionCalculator import CalIVPut
-from dwj_tools.Lib_OptionCalculator import CalDeltaPut
-from dwj_tools.Lib_OptionCalculator import CalIVCall
-from dwj_tools.Lib_OptionCalculator import CalDeltaCall
-from dwj_tools.Lib_OptionCalculator import CalThetaCall
-from dwj_tools.Lib_OptionCalculator import CalThetaPut
-from dwj_tools.Lib_OptionCalculator import CalVegaCall
-from dwj_tools.Lib_OptionCalculator import CalVegaPut
 from pylab import mpl
 from matplotlib import ticker
 
@@ -41,7 +31,25 @@ core = t.TCoreZMQ(quote_port="51864", trade_port="51834")
 thisDir = os.path.dirname(__file__)
 
 
-def get_option_data(interval='1K'):
+def get_crt_timescale():
+    '''
+    获得当前时间下最新数据在Subhistory时间节点中对应的起始结束字符串
+    '''
+    hour = time.localtime().tm_hour
+    if hour<=9:
+        start_str, end_str = '00', '02'
+    elif hour==10:
+        start_str, end_str = '02', '03'
+    elif hour==11:
+        start_str, end_str = '03', '04'
+    elif hour==13:
+        start_str, end_str = '05', '06'
+    elif hour==14:
+        start_str, end_str = '06', '07'
+    return start_str, end_str
+
+
+def get_option_data(interval='DOGSK'):
     '''获取给定日期的期权数据
     Args:
         interval: 数据间隔, 默认五分钟
@@ -51,14 +59,18 @@ def get_option_data(interval='1K'):
     today = datetime.date.today()
     csd_date = today.strftime('%Y%m%d')
     option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
+    len_of_df = 0
+    start_str, end_str = get_crt_timescale()
     while option_symbols['Success'] != 'OK':
         option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
     for month in [0, 1, 2, 3]:
+        print(f'当前month {month}')
         tau = int(option_symbols['Instruments']['Node'][0]
                   ['Node'][0]['Node'][2+month]['Node'][0]['TradeingDays'][0])
         for j, crt_symbol in enumerate(option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][0]['Contracts']):
+            print(j)
             new_option_data = pd.DataFrame(core.SubHistory(
-                crt_symbol, interval, csd_date+'00', csd_date+'07'))
+                crt_symbol, interval, csd_date+start_str, csd_date+end_str))
             temp_date = len(new_option_data) * [csd_date]
             flag = len(new_option_data) * ['C']
             new_option_data['date'] = temp_date
@@ -66,104 +78,28 @@ def get_option_data(interval='1K'):
             new_option_data['tau'] = tau
             if j == 0 and month == 0:
                 df = new_option_data
+                len_of_df = len(df)
             else:
-                df = df.append(new_option_data)
+                df = df.append(new_option_data.iloc[:len_of_df,:])
         for k in option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][1]['Contracts']:
             new_option_data = pd.DataFrame(core.SubHistory(
-                k, interval, csd_date+'00', csd_date+'07'))
+                k, interval, csd_date+start_str, csd_date+end_str))
             temp_date = len(new_option_data) * [csd_date]
             flag = len(new_option_data) * ['P']
             new_option_data['date'] = temp_date
             new_option_data['flag'] = flag
             new_option_data['tau'] = tau
-            df = df.append(new_option_data)
+            df = df.append(new_option_data.iloc[:len_of_df,:])
+    df.rename(columns={'de': 'delta','p': 'Close','ve':'vega','th':'theta'}, inplace=True)
     close = np.array(pd.to_numeric(df['Close']))
     df['Close'] = close
+    delta = np.array(pd.to_numeric(df['delta']))/100
+    df['delta'] = delta
+    vega = np.array(pd.to_numeric(df['vega']))
+    df['vega'] = vega
+    theta = np.array(pd.to_numeric(df['theta']))
+    df['theta'] = theta
     return df
-
-
-def cpt_greeks(call_option, put_option, tau):
-    '''计算希腊值
-    Args:
-        call/put_option: call/put 原始数据
-        tau: 年化后的到期时间, 记得输入时除以240
-    Return:
-        call/put_option
-    '''
-    K = []
-    iv = []
-    delta = []
-    vanna = []
-    vega = []
-    theta = []
-    r = np.log(1.018)
-    if len(call_option) < len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) == float(put_option['Symbol'][0].split('.P.')[1]):
-        put_option = put_option.iloc[:-1, :]
-    elif len(call_option) < len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) != float(put_option['Symbol'][0].split('.P.')[1]):
-        put_option = put_option.iloc[1:, :]
-    elif len(call_option) > len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) == float(put_option['Symbol'][0].split('.P.')[1]):
-        call_option = call_option.iloc[:-1, :]
-    elif len(call_option) > len(put_option) and float(call_option['Symbol'][0].split('.C.')[1]) != float(put_option['Symbol'][0].split('.P.')[1]):
-        call_option = call_option.iloc[1:, :]
-    for i in range(len(call_option)):
-        cc = call_option['Symbol'][i]
-        K += [float(cc.split('.C.')[1])]
-    K = np.array(K, dtype='float64')
-    iiidd = np.abs(np.array(call_option['Close'])
-                   - np.array(put_option['Close'])).argmin()
-    stock_price = (np.array(call_option['Close'])
-                   + K*np.exp(-tau*r)
-                   - np.array(put_option['Close']))[iiidd]
-    for k in range(len(call_option)):
-        implied_vol = CalIVCall(
-            S=stock_price, K=K[k], T=tau, r=r, c=call_option['Close'].iloc[k])
-        iv = iv + [implied_vol]
-        delta = delta + \
-            [CalDeltaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-        vanna = vanna + \
-            [CalVannaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-        vega = vega + \
-            [CalVegaCall(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        theta = theta + \
-            [CalThetaCall(S=stock_price, K=K[k],
-                          T=tau, r=r, iv=implied_vol)]
-    call_option['delta'] = delta
-    call_option['iv'] = iv
-    call_option['vanna'] = vanna
-    call_option['theta'] = theta
-    call_option['vega'] = vega
-    iv = []
-    delta = []
-    vanna = []
-    vega = []
-    theta = []
-    for k in range(len(put_option)):
-        implied_vol = CalIVPut(
-            S=stock_price, K=K[k], T=tau, r=r, p=put_option['Close'].iloc[k])
-        iv = iv + [implied_vol]
-        delta = delta + \
-            [CalDeltaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        vanna = vanna + \
-            [CalVannaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-        vega = vega + \
-            [CalVegaPut(S=stock_price, K=K[k],
-                        T=tau, r=r, iv=implied_vol)]
-        theta = theta + \
-            [CalThetaPut(S=stock_price, K=K[k],
-                         T=tau, r=r, iv=implied_vol)]
-    put_option['delta'] = delta
-    put_option['iv'] = iv
-    put_option['vanna'] = vanna
-    put_option['theta'] = theta
-    put_option['vega'] = vega
-    call_option['strike'] = K
-    put_option['strike'] = K
-    return call_option, put_option
 
 
 def cpt_position_vanilla(symbol='TC.S.SSE.510050', timeperiod=20, std=2, up_limit=1.4, down_limit=-0.4):
@@ -188,8 +124,12 @@ def cpt_position_vanilla(symbol='TC.S.SSE.510050', timeperiod=20, std=2, up_limi
     upper = upper[-1]
     lower = lower[-1]
     crt_close_list = pd.DataFrame(core.SubHistory(
-        symbol, '1K', today_str+'00', today_str+'07'))
-    crt_close = float(list(crt_close_list['Close'])[0])
+        symbol, '1K', today_str+'00', today_str+'02'))
+    try:
+        crt_close = float(list(crt_close_list['Close'])[4])
+    except:
+        print('获取不到今日第五分钟收盘价')
+        sys.exit('停止脚本')
     position = min(max((crt_close-lower)/(upper-lower), down_limit), up_limit)
     return position
 
@@ -328,8 +268,6 @@ def choose_option_given_month(option, month=0):
         true_option['flag'] == 'C'), :].reset_index(drop=True)
     true_option_put = true_option.loc[list(
         true_option['flag'] == 'P'), :].reset_index(drop=True)
-    true_option_call, true_option_put = cpt_greeks(
-        true_option_call, true_option_put, crt_tau/240)
     return true_option_call, true_option_put
 
 
@@ -416,8 +354,8 @@ def open_position_given_cash_vanna(option, crt_cash_vanna, target_cash_vanna, lo
                 option, month=1)
         code_call_25, code_call_65, code_put_25, code_put_65, get_data = get_option_code(
             true_option_call, true_option_put)
-    code_list = [code_call_25, code_put_25, code_call_65, code_put_65]
-    size_list = [b, b, a, a]
+    code_list = [code_put_25, code_call_65, code_call_25, code_put_65]
+    size_list = [b, a, b, a]
     if log:
         print(
             f'今日要做的目标期权分别为\ndelta25处的call:{code_call_25}\ndelta65处的call:{code_call_65}\ndelta25处的put:{code_put_25}\ndelta65处的put:{code_put_65}')
@@ -425,23 +363,38 @@ def open_position_given_cash_vanna(option, crt_cash_vanna, target_cash_vanna, lo
     if do_trading!='1':
         sys.exit('停止脚本')
     if target_cash_vanna > 0:
-        side_list = [1, 2, 2, 1]
+        side_list = [2, 2, 1, 1]
     else:
-        side_list = [2, 1, 1, 2]
+        side_list = [1, 1, 2, 2]
     while np.abs(crt_cash_vanna) < np.abs(target_cash_vanna):
         # 下单顺序, 先虚值再实值, 先call后put
         for i, csd_symbol in enumerate(code_list):
-            orders_obj = {
-                "Symbol": csd_symbol,
-                "BrokerID": BrokerID,
-                "Account": Account,
-                "TimeInForce": "1",
-                "Side": f"{side_list[i]}",
-                "OrderType": "1",
-                "OrderQty": f"{size_list[i]}",
-                            "PositionEffect": "4",
-                            "SelfTradePrevention": "3"
-            }
+            if i%2==0:  # 虚值单, 用中间价追价
+                orders_obj = {
+                    "Symbol": csd_symbol,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side_list[i]}",
+                    "OrderType": "15",
+                    'Synthetic': '1',
+                    "OrderQty": f"{size_list[i]}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3",
+                    'ChasePrice': '1T|3|1|M'
+                }
+            else:
+                orders_obj = {
+                    "Symbol": csd_symbol,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side_list[i]}",
+                    "OrderType": "1",
+                    "OrderQty": f"{size_list[i]}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3"
+                }
             ordid = core.NewOrder(orders_obj)
             while True:
                 if core.getorderinfo(ordid):
@@ -472,23 +425,29 @@ def close_position(BrokerID, Account, log=False, tag='all'):
             side = '2'
         else:
             side = '1'
-        orders_obj = {
-            "Symbol": symbol,
-            "BrokerID": BrokerID,
-            "Account": Account,
-            "TimeInForce": "1",
-            "Side": side,
-            "OrderType": "1",
-            "OrderQty": quantity,
-            "PositionEffect": "4",
-            "SelfTradePrevention": "3"
-        }
-        ordid = core.NewOrder(orders_obj)
-        while True:
-            if core.getorderinfo(ordid):
-                if core.getorderinfo(ordid)['ExecType'] == '3':
-                    break
-                time.sleep(0.5)
+        while int(quantity)!=0:
+            if int(quantity)>100:
+                temp_quantity = '100'
+            else:
+                temp_quantity = quantity
+            orders_obj = {
+                "Symbol": symbol,
+                "BrokerID": BrokerID,
+                "Account": Account,
+                "TimeInForce": "1",
+                "Side": side,
+                "OrderType": "1",
+                "OrderQty": temp_quantity,
+                "PositionEffect": "4",
+                "SelfTradePrevention": "3"
+            }
+            ordid = core.NewOrder(orders_obj)
+            while True:
+                if core.getorderinfo(ordid):
+                    if core.getorderinfo(ordid)['ExecType'] == '3':
+                        break
+                    time.sleep(0.5)
+            quantity = str(int(quantity)-int(temp_quantity))
     if log:
         print('平仓完毕')
     return
@@ -580,10 +539,11 @@ def get_crt_skew():
     today = datetime.date.today()
     today_str = today.strftime('%Y%m%d')
     hot_month = option_info['Instruments']['Node'][0]['Node'][0]['Node'][2]['CHS']
+    start_str, end_str = get_crt_timescale()
     syn_f = core.SubHistory(
-        f'TC.F.U_SSE.510050.{hot_month}', 'DOGSK', today_str+'00', today_str+'07')
+        f'TC.F.U_SSE.510050.{hot_month}', 'DOGSK', today_str+start_str, today_str+end_str)
     syn_f = pd.DataFrame(syn_f)
-    return float(syn_f['cskew'].tolist()[-5])*100, float(syn_f['pskew'].tolist()[-5])*100
+    return float(syn_f['cskew'].tolist()[-1])*100, float(syn_f['pskew'].tolist()[-1])*100
 
 
 def get_cashdelta_cashvega(BrokerID, Account):
@@ -601,6 +561,23 @@ def get_cashdelta_cashvega(BrokerID, Account):
     return crt_cash_delta, crt_cash_vega
 
 
+def save_origon_cashvanna(cashvanna):
+    '''
+    保存策略开仓/加仓时做的cashvanna, 而非对冲后剩余的cashvanna
+    '''
+    today = datetime.date.today()
+    new_df = pd.DataFrame([int(cashvanna)])
+    new_df.index = [today]
+    try:
+        df = pd.read_hdf('summary/cashvanna.h5')
+        if today in df.index:
+            df = df.drop([today])
+        new_df = df.append(new_df)
+    except:
+        pass
+    new_df.to_hdf('summary/cashvanna.h5', key='1')
+
+
 def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624', is_test=False, test_cash_vanna=0.02, test_month=1):
     '''模拟交易主程序
     Args:
@@ -615,6 +592,8 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     forced_next = False
     crt_cash_vanna, having_position = get_crt_account_cashvanna(
         BrokerID=BrokerID, Account=Account, log=log)
+    if log:
+        print('开始获取期权数据')
     try:
         option = get_option_data()
     except:
@@ -650,31 +629,54 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
         开始进行交易
     '''
     if crt_cash_vanna == 0 and target_cash_vanna != 0:  # 若未持仓 进行开仓
-        open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
+        if time.localtime().tm_hour < 10 or is_test:  # 只用在上午进行判断
+            if log:
+                print('当前刚开盘,进行开仓')
+            open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                        log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+            save_origon_cashvanna(target_cash_vanna)
     elif crt_cash_vanna != 0 and crt_cash_vanna*target_cash_vanna <= 0:  # 目标cashvanna为零或者与当前账户cashvanna反向
         # 进行平仓
-        close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
-        if target_cash_vanna != 0:
+        if target_cash_vanna==0 and (15>time.localtime().tm_hour>=14 or is_test):  # 若目标cashvanna为零，且在两点后，进行平仓
+            if log:
+                print('当前收盘前,目标cashvanna为零,进行平仓')
+            close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
+            save_origon_cashvanna(0)
+        elif target_cash_vanna != 0 and (time.localtime().tm_hour<10 or is_test):  # 若目标cashvanna与当前反向, 且在9点, 先平后开
+            if log:
+                print('当前开盘,目标cashvanna反向,先平后开')
+            close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
             crt_cash_vanna, having_position = get_crt_account_cashvanna(
                 BrokerID=BrokerID, Account=Account, log=log)
             open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                            log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+            save_origon_cashvanna(target_cash_vanna)
     elif crt_cash_vanna != 0:
         # 补做cashvanna
+        crt_cash_vanna, having_position = get_crt_account_cashvanna(
+            BrokerID=BrokerID, Account=Account, log=log)
         if forced_next:
             if log:
                 print('今日到期,先平掉账户中近月合约')
             close_position(BrokerID=BrokerID,
                            Account=Account, log=log, tag='near')
-        crt_cash_vanna, having_position = get_crt_account_cashvanna(
-            BrokerID=BrokerID, Account=Account, log=log)
-        if np.abs(target_cash_vanna) > np.abs(crt_cash_vanna):
+            if time.localtime().tm_hour==14 or is_test:
+                if log:
+                    print('当前收盘前,重新用次月合约开对应的cashvanna')
+                open_position_given_cash_vanna(option=option, crt_cash_vanna=0, target_cash_vanna=crt_cash_vanna,
+                                           log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+                return
+        if np.abs(target_cash_vanna) > np.abs(crt_cash_vanna) and (time.localtime().tm_hour<10 or is_test):
+            if log:
+                print('当前开盘时间,补做cashvanna')
             open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                            log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+            save_origon_cashvanna(target_cash_vanna)
+    else:
+        save_origon_cashvanna(0)
 
 
-def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False):
+def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False, is_test=False):
     '''收盘对冲delta以及vega
     Args:
         target_delta: 目标要对冲到的cash_delta值,例如target_delta=0.01,表示百分之一的cash_delta即cash*0.01
@@ -684,6 +686,11 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
     Return:
         None
     '''
+    if time.localtime().tm_hour<14 and not is_test:
+        if log:
+            print('未到收盘前，不对冲')
+        return
+    origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     use_next = False
     crt_cash_vanna, having_position = get_crt_account_cashvanna(
         BrokerID=BrokerID, Account=Account, log=log)
@@ -691,6 +698,7 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
         if log:
             print('当前未持仓, 无需对冲')
         return
+    origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     try:
         option = get_option_data()
     except:
@@ -743,25 +751,25 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
     while np.abs(crt_cash_delta-target_delta*cash) > tol_delta*cash or np.abs(crt_cash_vega-target_vega*cash) > tol_vega*cash:
         if crt_cash_vega >= target_vega*cash and crt_cash_delta >= target_delta*cash:
             side = 2
-            if crt_cash_vanna > 0:  # 卖call65
+            if origin_cashvanna>crt_cash_vanna > 0 or crt_cash_vanna<origin_cashvanna<0:  # 做正vanna,卖call65
                 code = code_call_65
             else:  # 卖call25
                 code = code_call_25
         elif crt_cash_vega >= target_vega*cash and crt_cash_delta < target_delta*cash:
             side = 2
-            if crt_cash_vanna > 0:  # 卖put25
+            if origin_cashvanna>crt_cash_vanna > 0 or crt_cash_vanna<origin_cashvanna<0:  # 做正vanna,卖put25
                 code = code_put_25
             else:  # 卖put65
                 code = code_put_65
         elif crt_cash_vega < target_vega*cash and crt_cash_delta >= target_delta*cash:
             side = 1
-            if crt_cash_vanna > 0:  # 买put65
+            if origin_cashvanna>crt_cash_vanna > 0 or crt_cash_vanna<origin_cashvanna<0:  # 做正vanna,买put65
                 code = code_put_65
             else:  # 买put25
                 code = code_put_25
         else:
             side = 1
-            if crt_cash_vanna > 0:  # 买call25
+            if origin_cashvanna>crt_cash_vanna > 0 or crt_cash_vanna<origin_cashvanna<0:  # 做正vanna,买call25
                 code = code_call_25
             else:  # 买call65
                 code = code_call_65
@@ -773,8 +781,8 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
             "Side": f"{side}",
             "OrderType": "1",
             "OrderQty": "1",
-                        "PositionEffect": "4",
-                        "SelfTradePrevention": "3"
+            "PositionEffect": "4",
+            "SelfTradePrevention": "3"
         }
         ordid = core.NewOrder(orders_obj)
         while True:
@@ -784,6 +792,8 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
                 time.sleep(0.5)
         crt_cash_delta, crt_cash_vega = get_cashdelta_cashvega(
             BrokerID, Account)
+        crt_cash_vanna, having_position = get_crt_account_cashvanna(
+            BrokerID=BrokerID, Account=Account, log=log)
         count += 1
         if log and (not count % 4):
             print(
@@ -856,7 +866,7 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
             '模拟账户名': Account,
             '日期': today_str,
             '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium'])),
-            '今日收益': str(round((float(i['PnL'])/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 2))+'%',
+            '今日收益': str(round((float(i['PnL'])/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%',
             '今日损益': int(round(float(i['PnL']), 0)),
             '昨持损益': int(round(float(i['YdPnL']), 0)),
             '日内损益': int(round(float(i['TdPnL']), 0)),
@@ -873,7 +883,9 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
 
     if not crt_position_only:
         md_str += '**今日最终未持仓**' + '\n\n'
+        having_final_position = False
     else:
+        having_final_position = True
         md_str += '**最终持仓统计**' + '\n\n'
         strike_of_position = []
         month_of_position = []
@@ -882,8 +894,10 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                 strike_of_position += [round(float(position['StrikePrice']), 2)]
             if int(position['Month']) not in month_of_position:
                 month_of_position += [int(position['Month'])]
-        csd_strike_list = strike_list[strike_list.index(
-            min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+        old_min_id = strike_list.index(min(strike_of_position))
+        old_max_id = strike_list.index(max(strike_of_position))
+        csd_strike_list = strike_list[old_min_id:old_max_id+1]
+        old_min_id = strike_list.index(min(strike_of_position))
         month_of_position.sort()
         position_array = np.zeros(
             (2*len(month_of_position), len(csd_strike_list)))
@@ -934,9 +948,12 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                     strike_of_position += [round(float(b), 2)]
                 if a.split('.')[-1] not in month_of_position:
                     month_of_position += [int(a.split('.')[-1])]
-
-            csd_strike_list = strike_list[strike_list.index(
-                min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+            if not having_final_position:
+                csd_strike_list = strike_list[strike_list.index(
+                    min(strike_of_position)):strike_list.index(max(strike_of_position))+1]
+            else:
+                csd_strike_list = strike_list[min(strike_list.index(
+                    min(strike_of_position)),old_min_id):max(strike_list.index(max(strike_of_position)),old_max_id)+1]
             month_of_position.sort()
             month_of_position = pd.Series(month_of_position)
             month_of_position.drop_duplicates(inplace=True)
@@ -1021,10 +1038,6 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                                  j['1%Td$Vanna'], j['Td$Theta'], j['Td$Charm'], j['Td$Speed'], j['Td$Vomma']]
             new_td_cashgreeks = [int(float(a)) for a in new_td_cashgreeks]
             td_cashgreeks += new_td_cashgreeks
-            # final_cashgreeks += [j['$Delta'], j['$Gamma'], j['$Vega'],
-            #                      j['1%$Vanna'], j['$Theta'], j['$Charm'], j['$Speed'], j['$Vomma']]
-            # td_cashgreeks += [j['Td$Delta'], j['Td$Gamma'], j['Td$Vega'],
-            #                   j['1%Td$Vanna'], j['Td$Theta'], j['Td$Charm'], j['Td$Speed'], j['Td$Vomma']]
             final_cashgreeks_df = final_cashgreeks_df.append(
                 pd.DataFrame(final_cashgreeks).T)
             td_cashgreeks_df = td_cashgreeks_df.append(
@@ -1040,8 +1053,6 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
         td_cashgreeks_df.index = index_
         final_cashgreeks_df.columns = columns
         td_cashgreeks_df.columns = columns
-        # md_str += '\n**总体cashgreeks**\n' + final_cashgreeks_df.to_markdown() + '\n\n' + \
-        #     '**日内cashgreeks**' + '\n\n' + td_cashgreeks_df.to_markdown() + '\n\n'
         md_str += '\n**总体cashgreeks**\n' + tabulate(final_cashgreeks_df, headers=final_cashgreeks_df.columns, tablefmt='pipe', disable_numparse=True) + '\n\n' + \
             '**日内cashgreeks**' + '\n\n' + \
             tabulate(td_cashgreeks_df, headers=td_cashgreeks_df.columns,
@@ -1071,18 +1082,27 @@ if __name__ == '__main__':
     maxqty = 3
     BrokerID = 'MVT_SIM2'
     Account = '1999_2-0070889'
-    if time.localtime().tm_hour < 12:
-        simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
-    elif 15>time.localtime().tm_hour>=12:
-        hedge_vega_delta(target_delta=0, target_vega=0, log=True,
-                          tol_delta=0.02, tol_vega=0.0001, BrokerID=BrokerID, Account=Account)
-    else:
-        write_summary_md(BrokerID=BrokerID, Account=Account)
+    # if time.localtime().tm_hour < 15:
+    #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
+    #     hedge_vega_delta(target_delta=0, target_vega=0, log=True,
+    #                       tol_delta=0.02, tol_vega=0.0001, BrokerID=BrokerID, Account=Account)
+    # else:
+    #     write_summary_md(BrokerID=BrokerID, Account=Account)
 
 # write_summary_md(BrokerID=BrokerID, Account=Account)
 
 # hedge_vega_delta(target_delta=0, target_vega=0, log=True,
-#                           tol_delta=0.02, tol_vega=0.0001, BrokerID=BrokerID, Account=Account)
+#                           tol_delta=0.01, tol_vega=0.0001, BrokerID=BrokerID, Account=Account, is_test=True)
 
-# simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
+simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account, is_test=True, test_month=0)
+# close_position(BrokerID, Account, log=True)
+
+
+
+
+
+
+
+
+
 
