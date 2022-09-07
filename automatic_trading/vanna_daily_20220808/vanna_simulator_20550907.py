@@ -676,7 +676,7 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
         save_origon_cashvanna(0)
 
 
-def get_position_code(BrokerID, Account):
+def get_position_code_for_hedge(BrokerID, Account):
     '''
     获取当前持仓中四个合约代码call25,call65,put25,put65
     '''
@@ -761,16 +761,19 @@ def get_position_code(BrokerID, Account):
                 get_codeput25 = True
             if code_put65!=0:
                 get_codeput65 = True
-    return code_call25, code_call65, code_put25, code_put65, size_call25, size_call_65, size_put25, size_put65
+    return code_call25, code_call65, code_put25, code_put65, int(size_call25), int(size_call_65), int(size_put25), int(size_put65)
 
 
+def judge_size(crt_hedge_size):
+    '''
+    判断当前剩余仓位是否可以继续对冲,若不能则直接停止程序
+    '''
+    if crt_hedge_size==0:
+        print('当前用作对冲的合约未持仓')
+        sys.exit('停止脚本')
 
 
-
-
-
-
-def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False, is_test=False):
+def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cashvanna, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False, is_test=False, forced_market=False, maxqty=3):
     '''收盘对冲delta以及vega
     Args:
         target_delta: 目标要对冲到的cash_delta值,例如target_delta=0.01,表示百分之一的cash_delta即cash*0.01
@@ -780,19 +783,20 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
     Return:
         None
     '''
+    otm_size = maxqty * 2
+    itm_size = round(maxqty*0.25/0.65) * 2
     if time.localtime().tm_hour<14 and not is_test:
         if log:
             print('未到收盘前，不对冲')
         return
-    origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
-    use_next = False
+    # origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     crt_cash_vanna, having_position = get_crt_account_cashvanna(
         BrokerID=BrokerID, Account=Account, log=log)
     if crt_cash_vanna == 0:
         if log:
             print('当前未持仓, 无需对冲')
         return
-    origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
+    # origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     try:
         option = get_option_data()
     except:
@@ -812,29 +816,9 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
     option_info = core.QueryAllInstrumentInfo('Options')
     while option_info['Success'] != 'OK':
         option_info = core.QueryAllInstrumentInfo('Options')
-    next_month = option_info['Instruments']['Node'][0]['Node'][0]['Node'][3]['CHS']
-    pos = core.QryPosition(BrokerID+'-'+Account)
-    for csd_position in pos:
-        if csd_position['Month'] == next_month:
-            use_next = True
-            break
-    if use_next:
-        if log:
-            print('查询到当前持仓中含有次月合约, 所以对冲直接选用次月合约')
-        true_option_call, true_option_put = choose_option_given_month(
-            option, month=1)
-    else:
-        true_option_call, true_option_put = choose_option_given_month(
-            option, month=0)
-    code_call_25, code_call_65, code_put_25, code_put_65, get_data = get_option_code(
-        true_option_call, true_option_put)
-    if (not get_data) and (not use_next):
-        if log:
-            print('近月合约delta不在范围内,考虑次月合约')
-        true_option_call, true_option_put = choose_option_given_month(
-            option, month=1)
-        code_call_25, code_call_65, code_put_25, code_put_65, get_data = get_option_code(
-            true_option_call, true_option_put)
+
+    code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
+        BrokerID=BrokerID, Account=Account)
     do_trading = input(f'对冲选取的合约为\ncall25:{code_call_25},\ncall65:{code_call_65},\nput25:{code_put_25},\nput65:{code_put_65},\n如果要继续对冲,请输入1:')
     if do_trading!='1':
         return
@@ -867,21 +851,78 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
                 code = code_call_25
             else:  # 买call65
                 code = code_call_65
-        if code==code_call_25 or code==code_put_25:
-            orders_obj = {
-                "Symbol": code,
-                "BrokerID": BrokerID,
-                "Account": Account,
-                "TimeInForce": "1",
-                "Side": f"{side}",
-                "OrderType": "15",
-                "OrderQty": "6",
-                "PositionEffect": "4",
-                "SelfTradePrevention": "3",
-                'Synthetic': '1',
-                'ChasePrice': '1T|3|1|M'
-            }
+        if code==code_call_25:
+            judge_size(size_call_25)
+        elif code==code_call_65:
+            judge_size(size_call_65)
+        elif code==code_put_25:
+            judge_size(size_put_25)
         else:
+            judge_size(size_put_65)
+        if code==code_call_25 or code==code_put_25:
+            if (code==code_call_25 and ( (side==2 and size_call_25>=otm_size) or (side==1 and size_call_25<=-otm_size) )) or (code==code_put_25 and ((side==2 and size_put_25>=otm_size) or (side==1 and size_put_25<=-otm_size))):
+                temp_order_size = otm_size
+                if code==code_call_25:
+                    size_call_25 = size_call_25 + int(temp_order_size*(side-1.5)*(-2))
+                else:
+                    size_put_25 = size_put_25 + int(temp_order_size*(side-1.5)*(-2))
+            elif (code==code_call_25 and ( (side==2 and 0<size_call_25<otm_size) or (side==1 and 0>size_call_25>-otm_size) )) or (code==code_put_25 and ((side==2 and 0<size_put_25<otm_size) or (side==1 and 0>size_put_25>-otm_size))):
+                if log:
+                    print('剩余仓位低于给定单次反向操作的手数,全平')
+                if code==code_call_25:
+                    temp_order_size = np.abs(size_call_25)
+                    size_call_25 = 0
+                else:
+                    temp_order_size = np.abs(size_put_25)
+                    size_put_25 = 0
+            else:
+                print('当前有方向不对的仓位,无法自动对冲,请手动调整后再运行')
+                sys.exit('停止脚本')
+            if forced_market:
+                orders_obj = {
+                    "Symbol": code,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side}",
+                    "OrderType": "1",
+                    "OrderQty": f"{temp_order_size}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3"
+                }
+            else:
+                orders_obj = {
+                    "Symbol": code,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side}",
+                    "OrderType": "15",
+                    "OrderQty": f"{temp_order_size}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3",
+                    'Synthetic': '1',
+                    'ChasePrice': '1T|3|1|M'
+                }
+        else:
+            if (code==code_call_65 and ( (side==2 and size_call_65>=itm_size) or (side==1 and size_call_65<=-itm_size) )) or (code==code_put_65 and ((side==2 and size_put_65>=itm_size) or (side==1 and size_put_65<=-itm_size))):  # 剩余仓位满足反向的对冲操作
+                temp_order_size = itm_size
+                if code==code_call_65:
+                    size_call_65 = size_call_65 + int(temp_order_size*(side-1.5)*(-2))
+                else:
+                    size_put_65 = size_put_65 + int(temp_order_size*(side-1.5)*(-2))
+            elif (code==code_call_65 and ( (side==2 and 0<size_call_65<itm_size) or (side==1 and 0>size_call_65>-itm_size) )) or (code==code_put_65 and ((side==2 and 0<size_put_65<itm_size) or (side==1 and 0>size_put_65>-itm_size))):  # 剩余仓位不够进行反向操作, 直接用剩余仓位对冲后重新获取代码
+                if log:
+                        print('剩余仓位低于给定单次反向操作的手数,全平')
+                if code==code_call_65:
+                    temp_order_size = np.abs(size_call_65)
+                    size_call_65 = 0
+                else:
+                    temp_order_size = np.abs(size_put_65)
+                    size_put_65 = 0
+            else:
+                print('当前有方向不对的仓位,无法自动对冲,请手动调整后再运行')
+                sys.exit('停止脚本')
             orders_obj = {
                 "Symbol": code,
                 "BrokerID": BrokerID,
@@ -889,7 +930,7 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
                 "TimeInForce": "1",
                 "Side": f"{side}",
                 "OrderType": "1",
-                "OrderQty": "2",
+                "OrderQty": f"{temp_order_size}",
                 "PositionEffect": "4",
                 "SelfTradePrevention": "3"
             }
@@ -907,6 +948,11 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, cash=100000
         if log and (not count % 2):
             print(
                 f'持续对冲中, 当前cashdelta为{crt_cash_delta:.0f}, cashvega为{crt_cash_vega:.0f}')
+        if (code==code_call_25 and size_call_25==0) or (code==code_call_65 and size_call_65==0) or (code==code_put_25 and size_put_25==0) or (code==code_put_65 and size_put_65==0):
+            if log:
+                print('目标合约仓位已为零,重新寻找对冲目标合约')
+            code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
+                    BrokerID=BrokerID, Account=Account)
     print('对冲完毕')
 
 
@@ -977,9 +1023,9 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
             '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium']))+8000,
             '今日收益': str(round(((float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']))/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%',
             '今日损益': int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0)),
-            '昨持损益': int(round(float(i['YdPnL']), 0)),
-            '日内损益': int(round(float(i['TdPnL']), 0)),
-            '手续费': crt_margin['Margins'][0]['Commissions'],
+            '昨持损益': str(int(round(float(i['YdPnL']), 0)))+'('+str(round(float(i['YdPnL'])/100000,2))+'%)',
+            '日内损益': str(int(round(float(i['TdPnL']), 0)))+'('+str(round(float(i['TdPnL'])/100000,2))+'%)',
+            '手续费': crt_margin['Margins'][0]['Commissions']+'('+str(round(float(crt_margin['Margins'][0]['Commissions'])/100000,2))+'%)',
             '总持仓': i['TotalPosition'],
             '净持仓': i['NetPosition']
         }
@@ -1192,16 +1238,16 @@ if __name__ == '__main__':
     maxqty = 3
     BrokerID = 'MVT_SIM2'
     Account = '1999_2-0070889'
-    if time.localtime().tm_hour < 15:
-        simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
-        hedge_vega_delta(target_delta=0, target_vega=0, log=True,
-                          tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account)
-    else:
-        write_summary_md(BrokerID=BrokerID, Account=Account)
+    # if time.localtime().tm_hour < 15:
+    #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
+    #     hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
+    #                       tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, maxqty=maxqty)
+    # else:
+    #     write_summary_md(BrokerID=BrokerID, Account=Account)
 
-# write_summary_md(BrokerID=BrokerID, Account=Account)
+write_summary_md(BrokerID=BrokerID, Account=Account)
 
-# hedge_vega_delta(target_delta=0, target_vega=0, log=True,
+# hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
 #                           tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, is_test=True)
 
 # simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, A ccount=Account, is_test=True, test_month=0)
