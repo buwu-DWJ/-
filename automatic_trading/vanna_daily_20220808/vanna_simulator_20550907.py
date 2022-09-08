@@ -68,7 +68,6 @@ def get_option_data(interval='DOGSK'):
         tau = int(option_symbols['Instruments']['Node'][0]
                   ['Node'][0]['Node'][2+month]['Node'][0]['TradeingDays'][0])
         for j, crt_symbol in enumerate(option_symbols['Instruments']['Node'][0]['Node'][0]['Node'][2+month]['Node'][0]['Contracts']):
-            print(j)
             new_option_data = pd.DataFrame(core.SubHistory(
                 crt_symbol, interval, csd_date+start_str, csd_date+end_str))
             temp_date = len(new_option_data) * [csd_date]
@@ -368,39 +367,79 @@ def open_position_given_cash_vanna(option, crt_cash_vanna, target_cash_vanna, lo
         side_list = [1, 1, 2, 2]
     while np.abs(crt_cash_vanna) < np.abs(target_cash_vanna):
         # 下单顺序, 先虚值再实值, 先call后put
-        for i, csd_symbol in enumerate(code_list):
-            if i%2==0:  # 虚值单, 用中间价追价
-                orders_obj = {
-                    "Symbol": csd_symbol,
-                    "BrokerID": BrokerID,
-                    "Account": Account,
-                    "TimeInForce": "1",
-                    "Side": f"{side_list[i]}",
-                    "OrderType": "15",
-                    'Synthetic': '1',
-                    "OrderQty": f"{size_list[i]}",
-                    "PositionEffect": "4",
-                    "SelfTradePrevention": "3",
-                    'ChasePrice': '1T|3|1|M'
-                }
-            else:
-                orders_obj = {
-                    "Symbol": csd_symbol,
-                    "BrokerID": BrokerID,
-                    "Account": Account,
-                    "TimeInForce": "1",
-                    "Side": f"{side_list[i]}",
-                    "OrderType": "1",
-                    "OrderQty": f"{size_list[i]}",
-                    "PositionEffect": "4",
-                    "SelfTradePrevention": "3"
-                }
-            ordid = core.NewOrder(orders_obj)
-            while True:
-                if core.getorderinfo(ordid):
-                    if core.getorderinfo(ordid)['ExecType'] == '3':
-                        break
-                    time.sleep(0.5)
+        # 虚值单, 用中间价追价
+        orders_obj_call_25 = {
+            "Symbol": code_list[0],
+            "BrokerID": BrokerID,
+            "Account": Account,
+            "TimeInForce": "1",
+            "Side": f"{side_list[0]}",
+            "OrderType": "11",
+            'Synthetic': '1',
+            "OrderQty": f"{size_list[0]}",
+            "PositionEffect": "4",
+            "SelfTradePrevention": "3",
+            'ChasePrice': '1T|3|2|M'
+        }
+        orders_obj_put_25 = {
+            "Symbol": code_list[2],
+            "BrokerID": BrokerID,
+            "Account": Account,
+            "TimeInForce": "1",
+            "Side": f"{side_list[2]}",
+            "OrderType": "11",
+            'Synthetic': '1',
+            "OrderQty": f"{size_list[2]}",
+            "PositionEffect": "4",
+            "SelfTradePrevention": "3",
+            'ChasePrice': '1T|3|2|M'
+        }
+        ordid_call_25 = core.NewOrder(orders_obj_call_25)
+        ordid_put_25 = core.NewOrder(orders_obj_put_25)
+        not_finish_call_25 = True
+        not_finish_put_25 = True
+        while True:
+            if core.getorderinfo(ordid_call_25) and core.getorderinfo(ordid_put_25):
+                if core.getorderinfo(ordid_call_25)['ExecType'] == '3' and not_finish_call_25:
+                    orders_obj_call_65 = {
+                        "Symbol": code_list[1],
+                        "BrokerID": BrokerID,
+                        "Account": Account,
+                        "TimeInForce": "1",
+                        "Side": f"{side_list[1]}",
+                        "OrderType": "15",
+                        'Synthetic': '1',
+                        "OrderQty": f"{size_list[1]}",
+                        "PositionEffect": "4",
+                        "SelfTradePrevention": "3",
+                        'ChasePrice': '1T|3|1|M'
+                    }
+                    ordid_call_65 = core.NewOrder(orders_obj_call_65)
+                    not_finish_call_25 = False
+                if core.getorderinfo(ordid_put_25)['ExecType'] == '3' and not_finish_put_25:
+                    orders_obj_put_65 = {
+                        "Symbol": code_list[3],
+                        "BrokerID": BrokerID,
+                        "Account": Account,
+                        "TimeInForce": "1",
+                        "Side": f"{side_list[3]}",
+                        "OrderType": "15",
+                        'Synthetic': '1',
+                        "OrderQty": f"{size_list[3]}",
+                        "PositionEffect": "4",
+                        "SelfTradePrevention": "3",
+                        'ChasePrice': '1T|3|1|M'
+                    }
+                    ordid_put_65 = core.NewOrder(orders_obj_put_65)
+                    not_finish_put_25 = False
+                if (not not_finish_call_25) and (not not_finish_put_25):
+                    break
+                time.sleep(0.1)
+        while True:
+            if core.getorderinfo(ordid_call_65) and core.getorderinfo(ordid_put_65):
+                if core.getorderinfo(ordid_call_65)['ExecType']=='3' and core.getorderinfo(ordid_put_65)['ExecType']=='3':
+                    break
+                time.sleep(0.1)
         crt_cash_vanna, _ = get_crt_account_cashvanna(
             BrokerID=BrokerID, Account=Account)
         if log:
@@ -599,7 +638,7 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     except:
         if log:
             print('获取期权数据时报错, 重试一次')
-        time.sleep(3)
+        time.sleep(2)
         option = get_option_data()
     while len(option) < 2:
         try:
@@ -607,7 +646,7 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
         except:
             if log:
                 print('获取期权数据时报错, 重试一次')
-            time.sleep(3)
+            time.sleep(2)
             option = get_option_data()
     if log:
         print('获取期权数据成功,计算目标cashvanna')
@@ -733,7 +772,7 @@ def get_position_code_for_hedge(BrokerID, Account):
             crt_synf = float(list(pd.DataFrame(crt_synf)['Close'])[-1])
         except:
             print('读取合成期货数据失败,重试')
-            time.sleep(3)
+            time.sleep(2)
             crt_synf = core.SubHistory(f'TC.F.U_SSE.510050.{temp_month}', '5K', today_str+'00', today_str+'07')
             crt_synf = float(list(pd.DataFrame(crt_synf)['Close'])[-1])
         for j in csd_strike_list:
@@ -797,12 +836,20 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
             print('当前未持仓, 无需对冲')
         return
     # origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
+    crt_cash_delta, crt_cash_vega = get_cashdelta_cashvega(BrokerID, Account)
+    if log:
+        print(f'当前cashdelta为{crt_cash_delta:.0f},cashvega为{crt_cash_vega:.0f}')
+        print(f'cashdelta容忍范围为{tol_delta*100:.1f}%,cashvega容忍范围为{tol_vega*100:.3f}%')
+    if np.abs(crt_cash_delta-target_delta*cash)<tol_delta*cash and np.abs(crt_cash_vega-target_vega*cash)<tol_vega*cash:
+        if log:
+            print('当前cashdelta与cashvega均在容忍范围内,无需对冲')
+        return
     try:
         option = get_option_data()
     except:
         if log:
             print('获取期权数据时报错, 重试一次')
-        time.sleep(3)
+        time.sleep(2)
         option = get_option_data()
     while len(option) < 2:
         try:
@@ -810,7 +857,7 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
         except:
             if log:
                 print('获取期权数据时报错, 重试一次')
-            time.sleep(3)
+            time.sleep(2)
             option = get_option_data()
     # 根据当前持仓中是否有次月合约判断对冲合约的选取
     option_info = core.QueryAllInstrumentInfo('Options')
@@ -822,9 +869,6 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
     do_trading = input(f'对冲选取的合约为\ncall25:{code_call_25},\ncall65:{code_call_65},\nput25:{code_put_25},\nput65:{code_put_65},\n如果要继续对冲,请输入1:')
     if do_trading!='1':
         return
-    crt_cash_delta, crt_cash_vega = get_cashdelta_cashvega(BrokerID, Account)
-    if log:
-        print(f'当前cashdelta为{crt_cash_delta:.0f},cashvega为{crt_cash_vega:.0f}')
     count = 0
     while np.abs(crt_cash_delta-target_delta*cash) > tol_delta*cash or np.abs(crt_cash_vega-target_vega*cash) > tol_vega*cash:
         if crt_cash_vega >= target_vega*cash and crt_cash_delta >= target_delta*cash:
@@ -897,12 +941,12 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
                     "Account": Account,
                     "TimeInForce": "1",
                     "Side": f"{side}",
-                    "OrderType": "15",
+                    "OrderType": "11",
                     "OrderQty": f"{temp_order_size}",
                     "PositionEffect": "4",
                     "SelfTradePrevention": "3",
                     'Synthetic': '1',
-                    'ChasePrice': '1T|3|1|M'
+                    'ChasePrice': '1T|3|2|M'
                 }
         else:
             if (code==code_call_65 and ( (side==2 and size_call_65>=itm_size) or (side==1 and size_call_65<=-itm_size) )) or (code==code_put_65 and ((side==2 and size_put_65>=itm_size) or (side==1 and size_put_65<=-itm_size))):  # 剩余仓位满足反向的对冲操作
@@ -923,23 +967,38 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
             else:
                 print('当前有方向不对的仓位,无法自动对冲,请手动调整后再运行')
                 sys.exit('停止脚本')
-            orders_obj = {
-                "Symbol": code,
-                "BrokerID": BrokerID,
-                "Account": Account,
-                "TimeInForce": "1",
-                "Side": f"{side}",
-                "OrderType": "1",
-                "OrderQty": f"{temp_order_size}",
-                "PositionEffect": "4",
-                "SelfTradePrevention": "3"
-            }
+            if forced_market:
+                orders_obj = {
+                    "Symbol": code,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side}",
+                    "OrderType": "1",
+                    "OrderQty": f"{temp_order_size}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3"
+                }
+            else:
+                orders_obj = {
+                    "Symbol": code,
+                    "BrokerID": BrokerID,
+                    "Account": Account,
+                    "TimeInForce": "1",
+                    "Side": f"{side}",
+                    "OrderType": "15",
+                    "OrderQty": f"{temp_order_size}",
+                    "PositionEffect": "4",
+                    "SelfTradePrevention": "3",
+                    'Synthetic': '1',
+                    'ChasePrice': '1T|3|1|M'
+                }
         ordid = core.NewOrder(orders_obj)
         while True:
             if core.getorderinfo(ordid):
                 if core.getorderinfo(ordid)['ExecType'] == '3':
                     break
-                time.sleep(0.5)
+                time.sleep(0.1)
         crt_cash_delta, crt_cash_vega = get_cashdelta_cashvega(
             BrokerID, Account)
         crt_cash_vanna, having_position = get_crt_account_cashvanna(
@@ -1237,7 +1296,7 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
 if __name__ == '__main__':
     maxqty = 3
     BrokerID = 'MVT_SIM2'
-    Account = '1999_2-0070889'
+    Account = '1999_2-0070599'
     # if time.localtime().tm_hour < 15:
     #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
     #     hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
@@ -1245,12 +1304,12 @@ if __name__ == '__main__':
     # else:
     #     write_summary_md(BrokerID=BrokerID, Account=Account)
 
-write_summary_md(BrokerID=BrokerID, Account=Account)
+# write_summary_md(BrokerID=BrokerID, Account=Account)
 
 # hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
-#                           tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, is_test=True)
+#                           tol_delta=0.1, tol_vega=0.0005, BrokerID='MVT_SIM2', Account='1999_2-0070599', is_test=True)
 
-# simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, A ccount=Account, is_test=True, test_month=0)
+simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account, is_test=True, test_month=0)
 # close_position(BrokerID, Account, log=True)
 
 
