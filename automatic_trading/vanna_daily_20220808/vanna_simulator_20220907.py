@@ -1,10 +1,13 @@
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
 '''
-@File    :   vanna_simulator_20220902.py
-@Time    :   2022/09/02
+@File    :   vanna_simulator_20550907.py
+@Time    :   2022/09/08 11:13:13
 @Author  :   DingWenjie
 @Contact :   359582058@qq.com
 @Desc    :   日级别vanna策略模拟交易脚本, 需上午下午各运行一次, 自动进行开仓以及对冲,
              收盘后运行则导出损益表
+             新加入虚值挂单,实值中间价功能
 '''
 
 
@@ -44,23 +47,26 @@ def get_crt_timescale():
         start_str, end_str = '03', '04'
     elif hour==13:
         start_str, end_str = '05', '06'
-    elif hour==14:
+    elif hour>=14:
         start_str, end_str = '06', '07'
     return start_str, end_str
 
 
-def get_option_data(interval='DOGSK'):
+def get_option_data(is_test=False):
     '''获取给定日期的期权数据
     Args:
         interval: 数据间隔, 默认五分钟
     Return:
         df
     '''
+    interval='DOGSK'
     today = datetime.date.today()
     csd_date = today.strftime('%Y%m%d')
     option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
     len_of_df = 0
     start_str, end_str = get_crt_timescale()
+    if is_test:
+        start_str, end_str = '00', '07'
     while option_symbols['Success'] != 'OK':
         option_symbols = core.QueryAllInstrumentInfo('Options', csd_date)
     for month in [0, 1, 2, 3]:
@@ -126,6 +132,8 @@ def cpt_position_vanilla(symbol='TC.S.SSE.510050', timeperiod=20, std=2, up_limi
         symbol, '1K', today_str+'00', today_str+'07'))
     try:
         crt_close = float(list(crt_close_list['Close'])[-1])
+        temp_time = list(crt_close_list['DateTime'])[-1]
+        print(f'当前获取到{temp_time}收盘价为{crt_close}')
     except:
         print('获取不到今日第五分钟收盘价')
         sys.exit('停止脚本')
@@ -452,6 +460,9 @@ def close_position(BrokerID, Account, log=False, tag='all'):
     Args:
         tag: 平哪个月份的仓位, 'all'-全平, 'near'-平近月
     '''
+    do_trading = input(f'即将进行平仓操作,平仓合约tag为{tag}\n如果要继续平仓,请输入1:')
+    if do_trading!='1':
+        return
     option_info = core.QueryAllInstrumentInfo('Options')
     hot_month = option_info['Instruments']['Node'][0]['Node'][0]['Node'][2]['CHS']
     pos = core.QryPosition(BrokerID+'-'+Account)
@@ -475,10 +486,12 @@ def close_position(BrokerID, Account, log=False, tag='all'):
                 "Account": Account,
                 "TimeInForce": "1",
                 "Side": side,
-                "OrderType": "1",
+                "OrderType": "15",
                 "OrderQty": temp_quantity,
                 "PositionEffect": "4",
-                "SelfTradePrevention": "3"
+                'Synthetic': '1',
+                "SelfTradePrevention": "3",
+                'ChasePrice': '1T|3|3|M'
             }
             ordid = core.NewOrder(orders_obj)
             while True:
@@ -634,20 +647,20 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     if log:
         print('开始获取期权数据')
     try:
-        option = get_option_data()
+        option = get_option_data(is_test)
     except:
         if log:
             print('获取期权数据时报错, 重试一次')
         time.sleep(2)
-        option = get_option_data()
+        option = get_option_data(is_test)
     while len(option) < 2:
         try:
-            option = get_option_data()
+            option = get_option_data(is_test)
         except:
             if log:
                 print('获取期权数据时报错, 重试一次')
             time.sleep(2)
-            option = get_option_data()
+            option = get_option_data(is_test)
     if log:
         print('获取期权数据成功,计算目标cashvanna')
     if option['tau'].drop_duplicates(keep='first').tolist()[0] == 0:
@@ -673,23 +686,32 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
                 print('当前刚开盘,进行开仓')
             open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                        log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            save_origon_cashvanna(target_cash_vanna)
+            if Account=='1999_2-0070889':
+                save_origon_cashvanna(target_cash_vanna)
     elif crt_cash_vanna != 0 and crt_cash_vanna*target_cash_vanna <= 0:  # 目标cashvanna为零或者与当前账户cashvanna反向
         # 进行平仓
-        if target_cash_vanna==0 and (15>time.localtime().tm_hour>=14 or is_test):  # 若目标cashvanna为零，且在两点后，进行平仓
+        if target_cash_vanna==0 and (15>time.localtime().tm_hour>=14 or is_test or forced_next):  # 若目标cashvanna为零，且在两点后，进行平仓
             if log:
                 print('当前收盘前,目标cashvanna为零,进行平仓')
             close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
-            save_origon_cashvanna(0)
-        elif target_cash_vanna != 0 and (time.localtime().tm_hour<11 or is_test):  # 若目标cashvanna与当前反向, 且在9点, 先平后开
+            if Account=='1999_2-0070889':
+                save_origon_cashvanna(0)
+        elif target_cash_vanna != 0 or is_test:  # 若目标cashvanna与当前反向, 且在9点, 先平后开
             if log:
-                print('当前开盘,目标cashvanna反向,先平后开')
+                print('目标cashvanna反向,先平后开')
             close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
+            if 15>time.localtime().tm_hour>=14:
+                if log:
+                    print('当前收盘前,虽然反向cashvanna,只需平仓')
+                if Account=='1999_2-0070889':
+                    save_origon_cashvanna(0)
+                return
             crt_cash_vanna, having_position = get_crt_account_cashvanna(
                 BrokerID=BrokerID, Account=Account, log=log)
             open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                            log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            save_origon_cashvanna(target_cash_vanna)
+            if Account=='1999_2-0070889':
+                save_origon_cashvanna(target_cash_vanna)
     elif crt_cash_vanna != 0:
         # 补做cashvanna
         crt_cash_vanna, having_position = get_crt_account_cashvanna(
@@ -699,20 +721,22 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
                 print('今日到期,先平掉账户中近月合约')
             close_position(BrokerID=BrokerID,
                            Account=Account, log=log, tag='near')
-            if time.localtime().tm_hour==14 or is_test:
+            if time.localtime().tm_hour<11 or is_test:
                 if log:
-                    print('当前收盘前,重新用次月合约开对应的cashvanna')
+                    print('当前开盘时间,重新用次月合约开对应的cashvanna')
                 open_position_given_cash_vanna(option=option, crt_cash_vanna=0, target_cash_vanna=crt_cash_vanna,
                                            log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-                return
         if np.abs(target_cash_vanna) > np.abs(crt_cash_vanna) and (time.localtime().tm_hour<11 or is_test):
             if log:
                 print('当前开盘时间,补做cashvanna')
             open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
                                            log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            save_origon_cashvanna(target_cash_vanna)
+            if Account=='1999_2-0070889':
+                save_origon_cashvanna(target_cash_vanna)
     else:
-        save_origon_cashvanna(0)
+        if Account=='1999_2-0070889':
+            return
+            save_origon_cashvanna(0)
 
 
 def get_position_code_for_hedge(BrokerID, Account):
@@ -812,65 +836,55 @@ def judge_size(crt_hedge_size):
         sys.exit('停止脚本')
 
 
-def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cashvanna, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False, is_test=False, forced_market=False, maxqty=3):
+def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cashvanna, cash=10000000, BrokerID='MVT_SIM2', Account='1999_2-0070624', log=False, is_test=False, forced_market=False, maxqty=3, forced_target_cashvanna=False):
     '''收盘对冲delta以及vega
     Args:
         target_delta: 目标要对冲到的cash_delta值,例如target_delta=0.01,表示百分之一的cash_delta即cash*0.01
         target_vega: 目标要对冲到的cash_vega
         tol_delta: 目标cashdelta上下容忍范围,也是小数
         tol_vega: 目标cashvega上下容忍范围
+        forced_market: 强制用市价对冲
+        forced_target_cashvanna: 强制使用给定的origin_cashvanna进行对冲
     Return:
         None
     '''
+    if Account=='1999_2-0070889' and not forced_target_cashvanna:
+        origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     otm_size = maxqty * 2
-    itm_size = round(maxqty*0.25/0.65) * 2
-    if time.localtime().tm_hour<14 and not is_test:
+    universe_itm_size = round(maxqty*0.25/0.65) * 2
+    if (time.localtime().tm_hour<14 or (time.localtime().tm_hour==14 and time.localtime().tm_min<45)) and not is_test:
         if log:
             print('未到收盘前，不对冲')
         return
-    # origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     crt_cash_vanna, having_position = get_crt_account_cashvanna(
         BrokerID=BrokerID, Account=Account, log=log)
     if crt_cash_vanna == 0:
         if log:
             print('当前未持仓, 无需对冲')
         return
-    # origin_cashvanna = float(pd.read_hdf('summary/cashvanna.h5').values[-1])
     crt_cash_delta, crt_cash_vega = get_cashdelta_cashvega(BrokerID, Account)
     if log:
         print(f'当前cashdelta为{crt_cash_delta:.0f},cashvega为{crt_cash_vega:.0f}')
         print(f'cashdelta容忍范围为{tol_delta*100:.1f}%,cashvega容忍范围为{tol_vega*100:.3f}%')
+        print(f'对冲的目标cashvanna为{origin_cashvanna}')
     if np.abs(crt_cash_delta-target_delta*cash)<tol_delta*cash and np.abs(crt_cash_vega-target_vega*cash)<tol_vega*cash:
         if log:
             print('当前cashdelta与cashvega均在容忍范围内,无需对冲')
         return
-    try:
-        option = get_option_data()
-    except:
-        if log:
-            print('获取期权数据时报错, 重试一次')
-        time.sleep(2)
-        option = get_option_data()
-    while len(option) < 2:
-        try:
-            option = get_option_data()
-        except:
-            if log:
-                print('获取期权数据时报错, 重试一次')
-            time.sleep(2)
-            option = get_option_data()
-    # 根据当前持仓中是否有次月合约判断对冲合约的选取
     option_info = core.QueryAllInstrumentInfo('Options')
     while option_info['Success'] != 'OK':
         option_info = core.QueryAllInstrumentInfo('Options')
-
     code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
         BrokerID=BrokerID, Account=Account)
     do_trading = input(f'对冲选取的合约为\ncall25:{code_call_25},\ncall65:{code_call_65},\nput25:{code_put_25},\nput65:{code_put_65},\n如果要继续对冲,请输入1:')
     if do_trading!='1':
         return
     count = 0
-    while np.abs(crt_cash_delta-target_delta*cash) > tol_delta*cash or np.abs(crt_cash_vega-target_vega*cash) > tol_vega*cash:
+    while np.abs(crt_cash_delta-target_delta*cash) > tol_delta*cash/10 or np.abs(crt_cash_vega-target_vega*cash) > tol_vega*cash/10:
+        if np.abs(crt_cash_vega-target_vega*cash) > tol_vega*cash/10:
+            itm_size = 6
+        else:
+            itm_size = universe_itm_size
         if crt_cash_vega >= target_vega*cash and crt_cash_delta >= target_delta*cash:
             side = 2
             if origin_cashvanna>crt_cash_vanna > 0 or crt_cash_vanna<origin_cashvanna<0:  # 做正vanna,卖call65
@@ -1015,13 +1029,13 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
     print('对冲完毕')
 
 
-def get_pnl_h5_and_draw_pic(BrokerID, Account):
+def get_pnl_h5_and_draw_pic(BrokerID, Account, equity_adjust=0):
     '''
     更新账户市值权益数据并计算年化收益以及最大回撤, 然后导出图
     '''
     today = datetime.date.today()
     crt_margin = core.QryMargin(BrokerID+'-'+Account)
-    crt_mktprem = float(crt_margin['Margins'][0]['MarketPremium'])+8000
+    crt_mktprem = float(crt_margin['Margins'][0]['MarketPremium'])+equity_adjust
     new_df = pd.DataFrame([crt_mktprem])
     new_df.index = [today]
     try:
@@ -1052,7 +1066,7 @@ def get_pnl_h5_and_draw_pic(BrokerID, Account):
     return new_df.index, data, d, annual_return, sharp
 
 
-def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
+def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjust=0):
     folder_path = os.path.join(thisDir, 'summary')
     if not os.path.exists(folder_path):
         os.mkdir(folder_path)
@@ -1073,20 +1087,43 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
         pnl = {
             '模拟账户名': Account,
             '日期': today_str,
-            '市值权益': int(crt_margin['Margins'][0]['MarketPremium'])+8000
+            '市值权益': int(crt_margin['Margins'][0]['MarketPremium'])+equity_adjust
         }
     else:
+        crt_month_sum_commission = 0  # 当月总手续费
+        crt_month_sum_intraday_pnl = 0  # 当月总日内
+        crt_month_sum_pnl = 0  # 当月总损益
+        commission = float(crt_margin['Margins'][0]['Commissions'])
+        intraday_pnl = int(round(float(i['TdPnL']), 0))
+        total_pnl = int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0))
+        new_df = pd.DataFrame([commission, intraday_pnl, total_pnl]).T
+        new_df.index = [today]
+        try:
+            df = pd.read_hdf('summary/crt_month_pnl.h5')
+            if today in df.index:
+                df = df.drop([today])
+            new_df = df.append(new_df)
+        except:
+            pass
+        new_df.to_hdf('summary/crt_month_pnl.h5', key='1')
+        for ii, csd_date in enumerate(new_df.index):
+            if csd_date.year==new_df.index[-1].year and csd_date.month==new_df.index[-1].month:
+                crt_month_sum_commission += new_df.iloc[ii,0]
+                crt_month_sum_intraday_pnl += new_df.iloc[ii,1]
+                crt_month_sum_pnl += new_df.iloc[ii,2]
         pnl = {
             '模拟账户名': Account,
             '日期': today_str,
-            '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium']))+8000,
-            '今日收益': str(round(((float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']))/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%',
-            '今日损益': int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0)),
-            '昨持损益': str(int(round(float(i['YdPnL']), 0)))+'('+str(round(float(i['YdPnL'])/100000,2))+'%)',
-            '日内损益': str(int(round(float(i['TdPnL']), 0)))+'('+str(round(float(i['TdPnL'])/100000,2))+'%)',
-            '手续费': crt_margin['Margins'][0]['Commissions']+'('+str(round(float(crt_margin['Margins'][0]['Commissions'])/100000,2))+'%)',
+            '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium']))+equity_adjust,
+            '今日损益(含手续费)': str(int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0)))+' ('+str(round(((float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']))/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%)',
+            '昨持损益': str(int(round(float(i['YdPnL']), 0)))+' ('+str(round(float(i['YdPnL'])/100000,3))+'%)',
+            '日内损益': str(int(round(float(i['TdPnL']), 0)))+' ('+str(round(float(i['TdPnL'])/100000,3))+'%)',
+            '手续费': crt_margin['Margins'][0]['Commissions']+' ('+str(round(float(crt_margin['Margins'][0]['Commissions'])/100000,3))+'%)',
             '总持仓': i['TotalPosition'],
-            '净持仓': i['NetPosition']
+            '净持仓': i['NetPosition'],
+            '本月总计收益': int(crt_month_sum_pnl),
+            '本月总计日内': int(crt_month_sum_intraday_pnl),
+            '本月总计手续费': int(crt_month_sum_commission)
         }
     md_str += pd.Series(pnl, name='模拟账户损益统计').to_markdown() + \
         '\n\n' + '## 持仓统计\n'
@@ -1247,6 +1284,9 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
                                     j['1%$Vanna'], j['$Theta'], j['$Charm'], j['$Speed'], j['$Vomma']]
             new_final_cashgreeks = [int(float(a))
                                     for a in new_final_cashgreeks]
+            new_final_cashgreeks[0] = str(new_final_cashgreeks[0])+'('+str(round(new_final_cashgreeks[0]*100/10000000,1))+'%)'
+            new_final_cashgreeks[2] = str(new_final_cashgreeks[2])+'('+str(round(new_final_cashgreeks[2]*100/10000000,3))+'%)'
+            new_final_cashgreeks[3] = str(new_final_cashgreeks[3])+'('+str(round(new_final_cashgreeks[3]*100/10000000,1))+'%)'
             final_cashgreeks += new_final_cashgreeks
             new_td_cashgreeks = [j['Td$Delta'], j['Td$Gamma'], j['Td$Vega'],
                                  j['1%Td$Vanna'], j['Td$Theta'], j['Td$Charm'], j['Td$Speed'], j['Td$Vomma']]
@@ -1272,15 +1312,15 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
             tabulate(td_cashgreeks_df, headers=td_cashgreeks_df.columns,
                      tablefmt='pipe', disable_numparse=True) + '\n\n'
     date_, value, d, annual_return, sharp = get_pnl_h5_and_draw_pic(
-        BrokerID=BrokerID, Account=Account)
+        BrokerID=BrokerID, Account=Account, equity_adjust=equity_adjust)
     plt.plot(date_, value, label='总资产')
     plt.legend(fontsize=12)
-    plt.xticks(fontsize=12, rotation=25)
+    plt.xticks(fontsize=10, rotation=22)
     plt.yticks(fontsize=12)
     plt.title(
         f'年化收益{annual_return*100:.1f}%,最大回撤{d*100:.1f}%,夏普比率{sharp:.2f}', fontsize=15)
     plt.grid()
-    plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(math.ceil(len(date_)/8)+1))
+    plt.gca().xaxis.set_major_locator(ticker.MultipleLocator(math.ceil(len(date_)/8)))
     plt.tight_layout()
     plt.savefig(f'summary/netvalue{today_str_vanilla}.png', dpi=500)
     md_str += '## 总资产曲线图\n\n' + f'![](netvalue{today_str_vanilla}.png)'
@@ -1296,28 +1336,27 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624'):
 if __name__ == '__main__':
     maxqty = 3
     BrokerID = 'MVT_SIM2'
-    Account = '1999_2-0070599'
+    Account = '1999_2-0070889'
+    get_crt_account_cashvanna(BrokerID=BrokerID, Account=Account, log=True)
     # if time.localtime().tm_hour < 15:
     #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
-    #     hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
+    #     hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000, forced_target_cashvanna=False, forced_market=False,
     #                       tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, maxqty=maxqty)
     # else:
-    #     write_summary_md(BrokerID=BrokerID, Account=Account)
+    #     write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
 
-# write_summary_md(BrokerID=BrokerID, Account=Account)
+
+'''
+以下测试用
+'''
+# BrokerID = core.QryAccount()['Accounts'][0]['BrokerID']
+# Account = core.QryAccount()['Accounts'][0]['Account']
+write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
 
 # hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
-#                           tol_delta=0.1, tol_vega=0.0005, BrokerID='MVT_SIM2', Account='1999_2-0070599', is_test=True)
-
-simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account, is_test=True, test_month=0)
+#                           tol_delta=0.01, tol_vega=0.0001, BrokerID='MVT_SIM2', Account='1999_2-0070599', is_test=True)
+# hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1, forced_target_cashvanna=True,
+#                           tol_delta=0.01, tol_vega=0.0001, BrokerID=BrokerID, Account=Account, is_test=True)
+# simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account, is_test=True, test_month=0)
 # close_position(BrokerID, Account, log=True)
-
-
-
-
-
-
-
-
-
 
