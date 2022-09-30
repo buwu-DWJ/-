@@ -29,9 +29,9 @@ from matplotlib import ticker
 
 mpl.rcParams['font.sans-serif'] = ['SimHei']
 mpl.rcParams['axes.unicode_minus'] = False
+thisDir = os.path.dirname(__file__)
 warnings.simplefilter('ignore')
 core = t.TCoreZMQ(quote_port="51864", trade_port="51834")
-thisDir = os.path.dirname(__file__)
 
 
 def get_crt_timescale():
@@ -346,6 +346,8 @@ def open_position_given_cash_vanna(option, crt_cash_vanna, target_cash_vanna, lo
             true_option_call['vega'][iiidd]+true_option_put['vega'][iiidd])/2
         theta_atm = float(
             true_option_call['theta'][iiidd]+true_option_put['theta'][iiidd])/2
+        if vega_atm==0:
+            vega_atm = 0.00001
         if log:
             print(
                 f'当前平值vega为{vega_atm:.5f},平值theta为{theta_atm:.5f},比值为{np.abs(theta_atm/vega_atm):.1f}')
@@ -739,9 +741,10 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
             save_origon_cashvanna(0)
 
 
-def get_position_code_for_hedge(BrokerID, Account):
+def get_position_code_for_hedge(BrokerID, Account, csd_synf=False):
     '''
     获取当前持仓中四个合约代码call25,call65,put25,put65
+    csd_synf: 是否考虑合成期货位置
     '''
     strike_list = list(np.arange(2.0, 2.95, 0.05)) + \
             list(np.arange(3.0, 4.0, 0.1))
@@ -800,16 +803,16 @@ def get_position_code_for_hedge(BrokerID, Account):
             crt_synf = core.SubHistory(f'TC.F.U_SSE.510050.{temp_month}', '5K', today_str+'00', today_str+'07')
             crt_synf = float(list(pd.DataFrame(crt_synf)['Close'])[-1])
         for j in csd_strike_list:
-            if df_position[j][i] != '-' and j<=crt_synf and code_call65==0 and not get_codecall65:
+            if df_position[j][i] != '-' and (j<=crt_synf or not csd_synf) and code_call65==0 and not get_codecall65:
                 code_call65 = f'TC.O.SSE.510050.{temp_month}.C.{j}'
                 size_call_65 = int(df_position[j][i])
-            if df_position[j][i] != '-' and j>crt_synf and not get_codecall25:
+            if df_position[j][i] != '-' and (j>crt_synf or not csd_synf) and not get_codecall25:
                 code_call25 = f'TC.O.SSE.510050.{temp_month}.C.{j}'
                 size_call25 = int(df_position[j][i])
-            if df_position[j][i+1] != '-' and j<=crt_synf and code_put25==0 and not get_codeput25:
+            if df_position[j][i+1] != '-' and (j<=crt_synf or not csd_synf) and code_put25==0 and not get_codeput25:
                 code_put25 = f'TC.O.SSE.510050.{temp_month}.P.{j}'
                 size_put25 = int(df_position[j][i+1])
-            if df_position[j][i+1] != '-' and j>crt_synf and not get_codeput65:
+            if df_position[j][i+1] != '-' and (j>crt_synf or not csd_synf) and not get_codeput65:
                 code_put65 = f'TC.O.SSE.510050.{temp_month}.P.{j}'
                 size_put65 = int(df_position[j][i+1])
         i += 2
@@ -875,6 +878,11 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
     while option_info['Success'] != 'OK':
         option_info = core.QueryAllInstrumentInfo('Options')
     code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
+        BrokerID=BrokerID, Account=Account, csd_synf=True)
+    if code_call_25==code_call_65 or code_put_25==code_put_65:
+        if log:
+            print('初次取对冲合约时取到相同合约, 尝试不考虑合成期货进行选取')
+        code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
         BrokerID=BrokerID, Account=Account)
     do_trading = input(f'对冲选取的合约为\ncall25:{code_call_25},\ncall65:{code_call_65},\nput25:{code_put_25},\nput65:{code_put_65},\n如果要继续对冲,请输入1:')
     if do_trading!='1':
@@ -1025,6 +1033,11 @@ def hedge_vega_delta(target_delta, target_vega, tol_delta, tol_vega, origin_cash
             if log:
                 print('目标合约仓位已为零,重新寻找对冲目标合约')
             code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
+                    BrokerID=BrokerID, Account=Account, csd_synf=True)
+            if code_call_25==code_call_65 or code_put_25==code_put_65:
+                if log:
+                    print('取对冲合约时取到相同合约, 尝试不考虑合成期货进行选取')
+                code_call_25, code_call_65, code_put_25, code_put_65, size_call_25, size_call_65, size_put_25, size_put_65 = get_position_code_for_hedge(
                     BrokerID=BrokerID, Account=Account)
     print('对冲完毕')
 
@@ -1338,12 +1351,12 @@ if __name__ == '__main__':
     BrokerID = 'MVT_SIM2'
     Account = '1999_2-0070889'
     get_crt_account_cashvanna(BrokerID=BrokerID, Account=Account, log=True)
-    # if time.localtime().tm_hour < 15:
-    #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
-    #     hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000, forced_target_cashvanna=False, forced_market=False,
-    #                       tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, maxqty=maxqty)
-    # else:
-    #     write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
+    if time.localtime().tm_hour < 15:
+        simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
+        hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000, forced_target_cashvanna=False, forced_market=False,
+                          tol_delta=0.1, tol_vega=0.0005, BrokerID=BrokerID, Account=Account, maxqty=maxqty)
+    else:
+        write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
 
 
 '''
@@ -1351,7 +1364,7 @@ if __name__ == '__main__':
 '''
 # BrokerID = core.QryAccount()['Accounts'][0]['BrokerID']
 # Account = core.QryAccount()['Accounts'][0]['Account']
-write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
+# write_summary_md(BrokerID=BrokerID, Account=Account, equity_adjust=28921)
 
 # hedge_vega_delta(target_delta=0, target_vega=0, log=True, origin_cashvanna=-1080000,
 #                           tol_delta=0.01, tol_vega=0.0001, BrokerID='MVT_SIM2', Account='1999_2-0070599', is_test=True)
