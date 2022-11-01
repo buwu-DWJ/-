@@ -5,9 +5,7 @@
 @Time    :   2022/09/08 11:13:13
 @Author  :   DingWenjie
 @Contact :   359582058@qq.com
-@Desc    :   日级别vanna策略模拟交易脚本, 需上午下午各运行一次, 自动进行开仓以及对冲,
-             收盘后运行则导出损益表
-             新加入虚值挂单,实值中间价功能
+@Desc    :   用平值进行对冲
 '''
 
 
@@ -95,6 +93,7 @@ def get_option_data(is_test=False):
             new_option_data['flag'] = flag
             new_option_data['tau'] = tau
             df = df.append(new_option_data.iloc[:len_of_df,:])
+        print(len(df))
     df.rename(columns={'de': 'delta','p': 'Close','ve':'vega','th':'theta'}, inplace=True)
     close = np.array(pd.to_numeric(df['Close']))
     df['Close'] = close
@@ -1197,8 +1196,10 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjus
 
 if __name__ == '__main__':
     maxqty = 3
-    BrokerID = 'MVT_SIM2'
-    Account = '1999_2-0070889'
+    # BrokerID = 'MVT_SIM2'
+    # Account = '1999_2-0070889'
+    BrokerID = 'DCore_SIM_SS2'
+    Account = 'mvtuat09'
     get_crt_account_cashvanna(BrokerID=BrokerID, Account=Account, log=True)
     if time.localtime().tm_hour < 15:
         simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)
