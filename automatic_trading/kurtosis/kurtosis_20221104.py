@@ -382,8 +382,8 @@ def get_skew_hist(log=False):
                 syn_f = core.SubHistory(
                     f'TC.F.U_SSE.{csd_symbol}.{csd_month}', 'DOGSK', crt_date+'00', crt_date+'07')
                 syn_f = pd.DataFrame(syn_f)
-                skew_array[i:i+235, j] = (pd.to_numeric(syn_f['cskew'])[:-5])*100
-                skew_array[i:i+235, j+4] = (pd.to_numeric(syn_f['pskew'])[:-5])*100
+                skew_array[i*235:i*235+235, j] = (pd.to_numeric(syn_f['cskew'])[:-5])*100
+                skew_array[i*235:i*235+235, j+4] = (pd.to_numeric(syn_f['pskew'])[:-5])*100
             date_list += [crt_date] * 235
         df = pd.DataFrame(skew_array)
         df.columns = ['call_skew_0', 'call_skew_1', 'call_skew_2',
@@ -427,8 +427,8 @@ def update_skew_hdf(log=False):
                     syn_f = core.SubHistory(
                         f'TC.F.U_SSE.510050.{csd_month}', 'DOGSK', crt_date+'00', crt_date+'07')
                     syn_f = pd.DataFrame(syn_f)
-                    skew_array[i:i+235, j] = float(pd.to_numeric(syn_f['cskew'])[:-5])*100
-                    skew_array[i:i+235, j+4] = float(pd.to_numeric(syn_f['pskew'])[:-5])*100
+                    skew_array[i*235:i*235+235, j] = float(pd.to_numeric(syn_f['cskew'])[:-5])*100
+                    skew_array[i*235:i*235+235, j+4] = float(pd.to_numeric(syn_f['pskew'])[:-5])*100
                 date_list += [crt_date]*235
             new_df = pd.DataFrame(skew_array)
             new_df.columns = ['call_skew_0', 'call_skew_1', 'call_skew_2',
