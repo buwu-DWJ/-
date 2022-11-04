@@ -1222,4 +1222,3 @@ if __name__ == '__main__':
 #                           tol_delta=0.01, tol_vega=0.0001, BrokerID=BrokerID, Account=Account, is_test=True)
 # simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account, is_test=True, test_month=0)
 # close_position(BrokerID, Account, log=True)
-
