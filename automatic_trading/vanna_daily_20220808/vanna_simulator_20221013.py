@@ -494,7 +494,7 @@ def close_position(BrokerID, Account, log=False, tag='all'):
                 "PositionEffect": "4",
                 'Synthetic': '1',
                 "SelfTradePrevention": "3",
-                'ChasePrice': '1T|3|3|M'
+                'ChasePrice': '1T|3|1|M'
             }
             ordid = core.NewOrder(orders_obj)
             while True:
@@ -517,8 +517,8 @@ def get_skew_hist(log=False):
     '''
     etf_hist = core.SubHistory(
         'TC.S.SSE.510050', 'DK', '2020010200', '2030010100')
-    date = pd.DataFrame(etf_hist)['Date'].tolist()[-140:-1]
-    skew_array = np.zeros((len(date), 8))
+    date = pd.DataFrame(etf_hist)['Date'].tolist()[:-1]
+    skew_array = np.zeros((len(date), 9))
     for i, crt_date in enumerate(date):
         if log:
             print(crt_date)
@@ -534,9 +534,11 @@ def get_skew_hist(log=False):
             syn_f = pd.DataFrame(syn_f)
             skew_array[i, j] = float(syn_f['cskew'].tolist()[-5])*100
             skew_array[i, j+4] = float(syn_f['pskew'].tolist()[-5])*100
+            if j==1:
+                skew_array[i, -1] = float(syn_f['iv'].tolist()[-5])*100
     df = pd.DataFrame(skew_array)
     df.columns = ['call_skew_0', 'call_skew_1', 'call_skew_2',
-                  'call_skew_3', 'put_skew_0', 'put_skew_1', 'put_skew_2', 'put_skew_3']
+                  'call_skew_3', 'put_skew_0', 'put_skew_1', 'put_skew_2', 'put_skew_3', 'iv_1']
     df.index = date
     df.to_hdf('skew_hist.h5', key='1')
     return
@@ -559,7 +561,7 @@ def update_skew_hdf(log=False):
         return
     else:
         date = etf_hist['Date'][1:-1]
-        skew_array = np.zeros((len(date), 8))
+        skew_array = np.zeros((len(date), 9))
         for i, crt_date in enumerate(date):
             if log:
                 print(crt_date)
@@ -575,9 +577,11 @@ def update_skew_hdf(log=False):
                 syn_f = pd.DataFrame(syn_f)
                 skew_array[i, j] = float(syn_f['cskew'].tolist()[-5])*100
                 skew_array[i, j+4] = float(syn_f['pskew'].tolist()[-5])*100
+                if j==1:
+                    skew_array[i, -1] = float(syn_f['iv'].tolist()[-5])*100
         new_df = pd.DataFrame(skew_array)
         new_df.columns = ['call_skew_0', 'call_skew_1', 'call_skew_2',
-                          'call_skew_3', 'put_skew_0', 'put_skew_1', 'put_skew_2', 'put_skew_3']
+                          'call_skew_3', 'put_skew_0', 'put_skew_1', 'put_skew_2', 'put_skew_3', 'iv_1']
         new_df.index = date
         new_skew_hist = skew_hist.append(new_df)
         new_skew_hist.to_hdf('skew_hist.h5', key='1')
@@ -633,6 +637,19 @@ def save_origon_cashvanna(cashvanna):
     new_df.to_hdf('summary/cashvanna.h5', key='1')
 
 
+def hv_iv_thre():
+    und_hist = core.SubHistory('TC.S.SSE.510050', 'DK', '2020010200', '2030010100')
+    und_hist = pd.DataFrame(und_hist)
+    temp_close = pd.to_numeric(und_hist['Close']).values[1:-1]
+    temp_pre_close = pd.to_numeric(und_hist['Close'].shift(1)).values[1:-1]
+    hv = [np.sqrt(240)*(np.log(temp_close[max(0, i-40+1):i+1]/temp_pre_close[max(0, i-40+1):i+1]).std())    for i in range(len(temp_close))]
+    hv = np.array(hv)
+    skew_hist = pd.read_hdf('skew_hist.h5')
+    iv = skew_hist['iv_1'].values[1:]/100
+    position = percentileofscore(((iv-hv)/(iv+hv))[-40:], ((iv-hv)/(iv+hv))[-1])
+    return position
+
+
 def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624', is_test=False, test_cash_vanna=0.02, test_month=1):
     '''模拟交易主程序
     Args:
@@ -675,6 +692,9 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
         forced_next = True
     target_cash_vanna = cpt_cash_vanna(
         cash=cash, log=log, crt_cash_vanna=crt_cash_vanna)
+    if target_cash_vanna<0 and hv_iv_thre()>70:
+        print(f'当前iv_hv分位值为{hv_iv_thre()}, 不做负vanna')
+        target_cash_vanna = 0
     if is_test:
         target_cash_vanna = test_cash_vanna * cash
         print(f'测试使用{test_cash_vanna*100}%的cashvanna进行开仓')
@@ -937,7 +957,11 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjus
     md_str = '# 日级别vanna模拟交易' + today_str + '概览\n' + '## 今日损益\n'
     crt_position_tracker = core.QryPositionTracker()
     crt_position_only = core.QryPosition(BrokerID+'-'+Account)
-    crt_margin = core.QryMargin(BrokerID+'-'+Account)
+    crt_margin = core.QryMargin(BrokerID+'-'+Account)['Margins']
+    for i in crt_margin:
+        if i['CurrencyToClient']=='BaseCurrency':
+            crt_margin = i
+            break
     total_position_tracker = 0
     print('正在做净值统计')
     for i in crt_position_tracker['Data']:
@@ -948,15 +972,15 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjus
         pnl = {
             '模拟账户名': Account,
             '日期': today_str,
-            '市值权益': int(crt_margin['Margins'][0]['MarketPremium'])+equity_adjust
+            '市值权益': int(float(crt_margin['MarketPremium']))+equity_adjust
         }
     else:
         crt_month_sum_commission = 0  # 当月总手续费
         crt_month_sum_intraday_pnl = 0  # 当月总日内
         crt_month_sum_pnl = 0  # 当月总损益
-        commission = float(crt_margin['Margins'][0]['Commissions'])
+        commission = float(crt_margin['Commissions'])
         intraday_pnl = int(round(float(i['TdPnL']), 0))
-        total_pnl = int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0))
+        total_pnl = int(round(float(i['PnL'])-float(crt_margin['Commissions']), 0))
         new_df = pd.DataFrame([commission, intraday_pnl, total_pnl]).T
         new_df.index = [today]
         try:
@@ -975,11 +999,11 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjus
         pnl = {
             '模拟账户名': Account,
             '日期': today_str,
-            '市值权益': int(float(crt_margin['Margins'][0]['MarketPremium']))+equity_adjust,
-            '今日损益(含手续费)': str(int(round(float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']), 0)))+' ('+str(round(((float(i['PnL'])-float(crt_margin['Margins'][0]['Commissions']))/(float(crt_margin['Margins'][0]['MarketPremium'])-float(i['PnL'])))*100, 3))+'%)',
+            '市值权益': int(float(crt_margin['MarketPremium']))+equity_adjust,
+            '今日损益(含手续费)': str(int(round(float(i['PnL'])-float(crt_margin['Commissions']), 0)))+' ('+str(round(((float(i['PnL'])-float(crt_margin['Commissions']))/(float(crt_margin['MarketPremium'])-float(i['PnL'])))*100, 3))+'%)',
             '昨持损益': str(int(round(float(i['YdPnL']), 0)))+' ('+str(round(float(i['YdPnL'])/100000,3))+'%)',
             '日内损益': str(int(round(float(i['TdPnL']), 0)))+' ('+str(round(float(i['TdPnL'])/100000,3))+'%)',
-            '手续费': crt_margin['Margins'][0]['Commissions']+' ('+str(round(float(crt_margin['Margins'][0]['Commissions'])/100000,3))+'%)',
+            '手续费': crt_margin['Commissions']+' ('+str(round(float(crt_margin['Commissions'])/100000,3))+'%)',
             '总持仓': i['TotalPosition'],
             '净持仓': i['NetPosition'],
             '本月总计收益': int(crt_month_sum_pnl),
@@ -1199,7 +1223,8 @@ if __name__ == '__main__':
     # BrokerID = 'MVT_SIM2'
     # Account = '1999_2-0070889'
     BrokerID = 'DCore_SIM_SS2'
-    Account = 'mvtuat09'
+    Account = 'simtest1'
+    # Account = 'mvtuat09'
     get_crt_account_cashvanna(BrokerID=BrokerID, Account=Account, log=True)
     if time.localtime().tm_hour < 15:
         simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)

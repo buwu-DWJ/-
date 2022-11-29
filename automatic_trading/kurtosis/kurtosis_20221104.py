@@ -15,6 +15,7 @@ import os
 import pandas as pd
 import numpy as np
 from scipy.stats import percentileofscore
+from func_timeout import func_set_timeout
 import warnings
 import datetime
 import time
@@ -411,6 +412,8 @@ def update_skew_hdf(log=False):
     else:
         date = etf_hist['Date'][1:-1]
         for csd_symbol in ['510050', '510300']:
+            if log:
+                print(f'开始获取{csd_symbol}')
             skew_hist = pd.read_hdf('skew_hist.h5', key=csd_symbol)
             skew_array = np.zeros((len(date)*235, 8))
             date_list = []
@@ -427,8 +430,8 @@ def update_skew_hdf(log=False):
                     syn_f = core.SubHistory(
                         f'TC.F.U_SSE.510050.{csd_month}', 'DOGSK', crt_date+'00', crt_date+'07')
                     syn_f = pd.DataFrame(syn_f)
-                    skew_array[i*235:i*235+235, j] = float(pd.to_numeric(syn_f['cskew'])[:-5])*100
-                    skew_array[i*235:i*235+235, j+4] = float(pd.to_numeric(syn_f['pskew'])[:-5])*100
+                    skew_array[i*235:i*235+235, j] = (pd.to_numeric(syn_f['cskew'])[:-5])*100
+                    skew_array[i*235:i*235+235, j+4] = (pd.to_numeric(syn_f['pskew'])[:-5])*100
                 date_list += [crt_date]*235
             new_df = pd.DataFrame(skew_array)
             new_df.columns = ['call_skew_0', 'call_skew_1', 'call_skew_2',
@@ -439,9 +442,12 @@ def update_skew_hdf(log=False):
         return
 
 
-def get_crt_skew():
+@func_set_timeout(10)
+def get_crt_skew(smoothed=True):
     '''
-    获取当前50和300etf近月平值期权的skew
+    获取当前50和300etf近月期权的skew
+    Return:
+        list: [cskew_50, pskew_50, cskew_300, pskew_300]
     '''
     option_info = core.QueryAllInstrumentInfo('Options')
     while option_info['Success'] != 'OK':
@@ -449,11 +455,28 @@ def get_crt_skew():
     today = datetime.date.today()
     today_str = today.strftime('%Y%m%d')
     hot_month = option_info['Instruments']['Node'][0]['Node'][0]['Node'][2]['CHS']
-    start_str, end_str = get_crt_timescale()
-    syn_f = core.SubHistory(
-        f'TC.F.U_SSE.510050.{hot_month}', 'DOGSK', today_str+start_str, today_str+end_str)
-    syn_f = pd.DataFrame(syn_f)
-    return float(syn_f['cskew'].tolist()[-1])*100, float(syn_f['pskew'].tolist()[-1])*100
+    # start_str, end_str = get_crt_timescale()
+    syn_f_50 = core.SubHistory(
+        f'TC.F.U_SSE.510050.{hot_month}', 'DOGSK', today_str+'00', today_str+'07')
+    syn_f_50 = pd.DataFrame(syn_f_50)
+    syn_f_300 = core.SubHistory(
+        f'TC.F.U_SSE.510300.{hot_month}', 'DOGSK', today_str+'00', today_str+'07')
+    syn_f_300 = pd.DataFrame(syn_f_300)
+    if smoothed:
+        skew_list = [
+            np.median(pd.to_numeric(syn_f_50['cskew']).values[1:][-5:])*10000,
+            np.median(pd.to_numeric(syn_f_50['pskew']).values[1:][-5:])*10000,
+            np.median(pd.to_numeric(syn_f_300['cskew']).values[1:][-5:])*10000,
+            np.median(pd.to_numeric(syn_f_300['pskew']).values[1:][-5:])*10000
+            ]
+    else:
+        skew_list = [
+            pd.to_numeric(syn_f_50['cskew']).values[-1]*10000,
+            pd.to_numeric(syn_f_50['pskew']).values[-1]*10000,
+            pd.to_numeric(syn_f_300['cskew']).values[-1]*10000,
+            pd.to_numeric(syn_f_300['pskew']).values[-1]*10000
+            ]
+    return skew_list
 
 
 def get_cashdelta_cashvega(BrokerID, Account):
@@ -488,7 +511,7 @@ def save_origon_cashvanna(cashvanna):
     new_df.to_hdf('summary/cashvanna.h5', key='1')
 
 
-def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624', is_test=False, test_cash_vanna=0.02, test_month=1):
+def simulator(log=False, BrokerID='MVT_SIM2', Account='1999_2-0070624', is_test=False, test_month=1):
     '''模拟交易主程序
     Args:
         maxqty: 每次下单最大手数
@@ -497,11 +520,7 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     '''
     # 获取账户当前仓位
     cash = 10000000
-    b = maxqty
-    a = round(maxqty*0.25/0.65)
     forced_next = False
-    crt_cash_vanna, having_position = get_crt_account_cashvanna(
-        BrokerID=BrokerID, Account=Account, log=log)
     if log:
         print('开始获取期权数据')
     try:
@@ -520,7 +539,7 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
             time.sleep(2)
             option = get_option_data(is_test)
     if log:
-        print('获取期权数据成功,计算目标cashvanna')
+        print('获取期权数据成功')
     if option['tau'].drop_duplicates(keep='first').tolist()[0] == 0:
         if log:
             print('今天到期日')
@@ -528,72 +547,80 @@ def simulator(log=False, maxqty=3, BrokerID='MVT_SIM2', Account='1999_2-0070624'
     if is_test and test_month == 1:
         print('测试到期日情形中')
         forced_next = True
-    target_cash_vanna = 1
     if is_test:
-        target_cash_vanna = test_cash_vanna * cash
-        print(f'测试使用{test_cash_vanna*100}%的cashvanna进行开仓')
-    if log:
-        print(f'今天要做的目标cashvanna为{target_cash_vanna:.0f}')
+        print(f'测试开仓')
     '''
         开始进行交易
     '''
-    if crt_cash_vanna == 0 and target_cash_vanna != 0:  # 若未持仓 进行开仓
-        if time.localtime().tm_hour < 11 or is_test:  # 只用在上午进行判断
-            if log:
-                print('当前刚开盘,进行开仓')
-            open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
-                                       log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            if Account=='1999_2-0070889':
-                save_origon_cashvanna(target_cash_vanna)
-    elif crt_cash_vanna != 0 and crt_cash_vanna*target_cash_vanna <= 0:  # 目标cashvanna为零或者与当前账户cashvanna反向
-        # 进行平仓
-        if target_cash_vanna==0 and (15>time.localtime().tm_hour>=14 or is_test or forced_next):  # 若目标cashvanna为零，且在两点后，进行平仓
-            if log:
-                print('当前收盘前,目标cashvanna为零,进行平仓')
-            close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
-            if Account=='1999_2-0070889':
-                save_origon_cashvanna(0)
-        elif target_cash_vanna != 0 or is_test:  # 若目标cashvanna与当前反向, 且在9点, 先平后开
-            if log:
-                print('目标cashvanna反向,先平后开')
-            close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
-            if 15>time.localtime().tm_hour>=14:
-                if log:
-                    print('当前收盘前,虽然反向cashvanna,只需平仓')
-                if Account=='1999_2-0070889':
-                    save_origon_cashvanna(0)
-                return
-            crt_cash_vanna, having_position = get_crt_account_cashvanna(
-                BrokerID=BrokerID, Account=Account, log=log)
-            open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
-                                           log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            if Account=='1999_2-0070889':
-                save_origon_cashvanna(target_cash_vanna)
-    elif crt_cash_vanna != 0:
-        # 补做cashvanna
-        crt_cash_vanna, having_position = get_crt_account_cashvanna(
-            BrokerID=BrokerID, Account=Account, log=log)
-        if forced_next:
-            if log:
-                print('今日到期,先平掉账户中近月合约')
-            close_position(BrokerID=BrokerID,
-                           Account=Account, log=log, tag='near')
-            if time.localtime().tm_hour<11 or is_test:
-                if log:
-                    print('当前开盘时间,重新用次月合约开对应的cashvanna')
-                open_position_given_cash_vanna(option=option, crt_cash_vanna=0, target_cash_vanna=crt_cash_vanna,
-                                           log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-        if np.abs(target_cash_vanna) > np.abs(crt_cash_vanna) and (time.localtime().tm_hour<11 or is_test):
-            if log:
-                print('当前开盘时间,补做cashvanna')
-            open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
-                                           log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
-            if Account=='1999_2-0070889':
-                save_origon_cashvanna(target_cash_vanna)
-    else:
-        if Account=='1999_2-0070889':
-            return
-            save_origon_cashvanna(0)
+    while time.localtime().tm_hour<15 and (time.localtime().tm_hour<14 or time.localtime().tm_min<51):
+        if not time.localtime().tm_min%5:
+            print(time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(time.time())))
+            crt_position_only = core.QryPosition(BrokerID+'-'+Account)
+            if not crt_position_only:
+                print('当前未持仓, 判断开仓条件')
+                skew_list = get_crt_skew()
+                if :
+                    open_position_given_cash_vanna(option, crt_cash_vanna, target_cash_vanna, log, BrokerID, Account, a, b)
+
+
+
+    # if crt_cash_vanna == 0 and target_cash_vanna != 0:  # 若未持仓 进行开仓
+    #     if time.localtime().tm_hour < 11 or is_test:  # 只用在上午进行判断
+    #         if log:
+    #             print('当前刚开盘,进行开仓')
+    #         open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
+    #                                    log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+    #         if Account=='1999_2-0070889':
+    #             save_origon_cashvanna(target_cash_vanna)
+    # elif crt_cash_vanna != 0 and crt_cash_vanna*target_cash_vanna <= 0:  # 目标cashvanna为零或者与当前账户cashvanna反向
+    #     # 进行平仓
+    #     if target_cash_vanna==0 and (15>time.localtime().tm_hour>=14 or is_test or forced_next):  # 若目标cashvanna为零，且在两点后，进行平仓
+    #         if log:
+    #             print('当前收盘前,目标cashvanna为零,进行平仓')
+    #         close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
+    #         if Account=='1999_2-0070889':
+    #             save_origon_cashvanna(0)
+    #     elif target_cash_vanna != 0 or is_test:  # 若目标cashvanna与当前反向, 且在9点, 先平后开
+    #         if log:
+    #             print('目标cashvanna反向,先平后开')
+    #         close_position(BrokerID=BrokerID, Account=Account, log=log, tag='all')
+    #         if 15>time.localtime().tm_hour>=14:
+    #             if log:
+    #                 print('当前收盘前,虽然反向cashvanna,只需平仓')
+    #             if Account=='1999_2-0070889':
+    #                 save_origon_cashvanna(0)
+    #             return
+    #         crt_cash_vanna, having_position = get_crt_account_cashvanna(
+    #             BrokerID=BrokerID, Account=Account, log=log)
+    #         open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
+    #                                        log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+    #         if Account=='1999_2-0070889':
+    #             save_origon_cashvanna(target_cash_vanna)
+    # elif crt_cash_vanna != 0:
+    #     # 补做cashvanna
+    #     crt_cash_vanna, having_position = get_crt_account_cashvanna(
+    #         BrokerID=BrokerID, Account=Account, log=log)
+    #     if forced_next:
+    #         if log:
+    #             print('今日到期,先平掉账户中近月合约')
+    #         close_position(BrokerID=BrokerID,
+    #                        Account=Account, log=log, tag='near')
+    #         if time.localtime().tm_hour<11 or is_test:
+    #             if log:
+    #                 print('当前开盘时间,重新用次月合约开对应的cashvanna')
+    #             open_position_given_cash_vanna(option=option, crt_cash_vanna=0, target_cash_vanna=crt_cash_vanna,
+    #                                        log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+    #     if np.abs(target_cash_vanna) > np.abs(crt_cash_vanna) and (time.localtime().tm_hour<11 or is_test):
+    #         if log:
+    #             print('当前开盘时间,补做cashvanna')
+    #         open_position_given_cash_vanna(option=option, crt_cash_vanna=crt_cash_vanna, target_cash_vanna=target_cash_vanna,
+    #                                        log=log, a=a, b=b, BrokerID=BrokerID, Account=Account, forced_next=forced_next)
+    #         if Account=='1999_2-0070889':
+    #             save_origon_cashvanna(target_cash_vanna)
+    # else:
+    #     if Account=='1999_2-0070889':
+    #         return
+    #         save_origon_cashvanna(0)
 
 
 def get_position_code_for_hedge(true_option_call, true_option_put):
@@ -1050,11 +1077,8 @@ def write_summary_md(BrokerID='MVT_SIM2', Account='1999_2-0070624', equity_adjus
 
 if __name__ == '__main__':
     maxqty = 3
-    # BrokerID = 'MVT_SIM2'
-    # Account = '1999_2-0070889'
-    # BrokerID = 'DCore_SIM_SS2'
-    # Account = 'mvtuat09'
-    # Account = 'simtest1'
+    BrokerID = 'DCore_SIM_SS2'
+    Account = 'simtest3'
     # get_crt_account_cashvanna(BrokerID=BrokerID, Account=Account, log=True)
     # if time.localtime().tm_hour < 15:
     #     simulator(log=True, maxqty=maxqty, BrokerID=BrokerID, Account=Account)

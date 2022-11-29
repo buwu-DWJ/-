@@ -24,12 +24,14 @@ tk.Label(window, text="日期2:").grid(row=2)
 tk.Label(window, text="分钟节点1:").grid(row=3)
 tk.Label(window, text="分钟节点2:").grid(row=4)
 # 创建输入框控件
-get_symbol = tk.Entry(window)
+get_symbol_0 = tk.Entry(window)
+get_symbol_1 = tk.Entry(window)
 get_date0 = tk.Entry(window)
 get_date1 = tk.Entry(window)
 get_range0 = tk.Entry(window)
 get_range1 = tk.Entry(window)
-get_symbol.grid(row=0, column=1)#, padx=10, pady=5)
+get_symbol_0.grid(row=0, column=1)#, padx=10, pady=5)
+get_symbol_1.grid(row=0, column=2)
 get_date0.grid(row=1, column=1)#, padx=10, pady=5)
 get_date1.grid(row=2, column=1)#, padx=10, pady=5)
 get_range0.grid(row=3, column=1)#, padx=10, pady=5)
@@ -61,8 +63,8 @@ def process_data():
     obj = table_2.get_children()
     for o in obj:
         table_2.delete(o)
-    option_0, _, synf_0 = r.read_data_dogsk(get_symbol.get(), get_date0.get(), [int(get_range0.get())])
-    option_1, _, synf_1 = r.read_data_dogsk(get_symbol.get(), get_date1.get(), [int(get_range1.get())])
+    option_0, _, synf_0 = r.read_data_dogsk(get_symbol_0.get(), get_date0.get(), [int(get_range0.get())])
+    option_1, _, synf_1 = r.read_data_dogsk(get_symbol_0.get(), get_date1.get(), [int(get_range1.get())])
     option_0 = option_0.reset_index(drop=True)
     option_1 = option_1.reset_index(drop=True)
     globals()['synf_0'] = synf_0
@@ -88,8 +90,8 @@ def process_data():
         globals()[f'strike_list_1_{i}'] = strike_list_1
         a = join_list(strike_list_0, strike_list_1)
         all_strike = join_list(all_strike, a)
-        s_0 = [round(a,4) if i!=0 and i!=1 else round(a*10000,4) for i,a in enumerate(synf_0.iloc[0,i*9:i*9+9])]
-        s_1 = [round(a,4) if i!=0 and i!=1 else round(a*10000,4) for i,a in enumerate(synf_1.iloc[0,i*9:i*9+9])]
+        s_0 = [round(a,4) if i!=0 and i!=1 else round(a*10000,4) for i,a in enumerate(synf_0.iloc[0,i*9:i*9+9])]+[round((float(synf_0.iloc[0,i*9])-float(synf_0.iloc[0,i*9+1]))*10000,4), round((float(synf_0.iloc[0,i*9])+float(synf_0.iloc[0,i*9+1]))*10000,4)]
+        s_1 = [round(a,4) if i!=0 and i!=1 else round(a*10000,4) for i,a in enumerate(synf_1.iloc[0,i*9:i*9+9])]+[round((float(synf_1.iloc[0,i*9])-float(synf_1.iloc[0,i*9+1]))*10000,4), round((float(synf_1.iloc[0,i*9])+float(synf_1.iloc[0,i*9+1]))*10000,4)]
         table_2.insert(parent='', index=i*2, text=synf_str[i*2],values=[synf_str[i*2]]+s_0)
         table_2.insert(parent='', index=i*2+1, text=synf_str[i*2+1],values=[synf_str[i*2+1]]+s_1)
     all_strike = list(np.sort(np.array(all_strike)))
@@ -462,7 +464,7 @@ table_1.column('月份', width=60, minwidth=9, anchor='s', )  # 定义列
 for i in range(strike_len):
     table_1.column(f'K{i}', width=50, minwidth=9, anchor='s')  # 定义列
 table_1.grid(row=7, columnspan=strike_len, padx=5, pady=10)
-columns_synf = ['月份','cskew','pskew','tau','iv','synf_c','civ_25','piv_25','civ_10','piv_10']
+columns_synf = ['月份','cskew','pskew','tau','iv','synf_c','civ_25','piv_25','civ_10','piv_10','skew','kurt']
 table_2 = ttk.Treeview(
         master=window,  # 父容器
         height=9,  # 表格显示的行数,height行
