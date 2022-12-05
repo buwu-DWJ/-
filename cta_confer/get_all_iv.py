@@ -135,7 +135,6 @@ app=xw.App(visible=True,add_book=False)
 wb = app.books.open('iv_skew_compare.xlsx')
 sheet=wb.sheets[0]
 all=sheet.used_range
-print(all.value)
 all.api.CopyPicture()
 sheet.api.Paste()
 img_name='iv_skew_compare'

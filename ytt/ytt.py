@@ -182,7 +182,7 @@ def cpt_intraday_pnl_total(Account):
     日内期权盈亏分析, 总计版
     '''
     end_idx = 0  # 计算期权盈亏的截止时间, 即当前时刻与日盘收盘时刻取小
-    globals()['filled_rep'] = get_filled_report(Account)
+    filled_rep = get_filled_report(Account)
     pnl_list = []
     for i, csd_rep in tqdm(enumerate(filled_rep['symbol'])):
         temp_pnl = {}
