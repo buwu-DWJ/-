@@ -346,12 +346,21 @@ def bt_gamma(start_date, end_date):
     return value, date, d, annual_return, sharp, count
 
 
+import dwj_tools.read_hdf as r
+import pandas as pd
 
+start_date = '20221101'
+df = pd.DataFrame()
 
-
-
-
-
+while int(start_date)<20221131:
+    print(int(start_date))
+    try:
+        option, und, synf = r.read_data_dogsk('510050', start_date, min_range='all')
+    except:
+        start_date = str(int(start_date)+1)
+        continue
+    df = df.append(option)
+    start_date = str(int(start_date)+1)
 
 
 

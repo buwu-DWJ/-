@@ -23,16 +23,18 @@ core = t.TCoreZMQ(quote_port="51864", trade_port="51834")
 print('开始更新dogsk数据')
 u.update()
 print('更新完毕')
-length = 365
+length = 375
 print('开始获取历史收盘价')
-df = core.SubHistory('TC.S.SSE.510050', '5K', '2020010200', datetime.datetime.today().strftime('%Y%m%d')+'07')
+df = core.SubHistory('TC.S.SSE.510050', '5K', '2020010200',
+                     datetime.datetime.today().strftime('%Y%m%d')+'07')
 df = pd.DataFrame(df)
 print('获取成功')
 csd_idx = [i*48+46 for i in range(int(len(df)/48))][-length-1:]
-close = np.log(pd.to_numeric(df['Close'][csd_idx]).reset_index(drop=True).pct_change()+1).dropna()
+close = np.log(pd.to_numeric(df['Close'][csd_idx]).reset_index(
+    drop=True).pct_change()+1).dropna()
 close = close.rename('adj_lrtn')
 close.to_csv('crt_daily.csv', index=False)
 robjects.r.source('garch_daily.R')
-pred = np.array(round(pd.read_csv('daily_pred.csv').iloc[-1,:],3))
+pred = np.array(round(pd.read_csv('daily_pred.csv').iloc[-1, :], 3))
 pred[np.isnan(pred)] = 0
 print(f'预测之中给出正向预测数为{(pred>0).sum()}, 负向预测数为{(pred<0).sum()}')
